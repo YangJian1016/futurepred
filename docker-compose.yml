@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: futurepred-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - FRONTEND_ORIGIN=http://localhost:5173
+      - PUBLIC_BASE_URL=http://localhost:8000
+      - POLLINATIONS_BASE_URL=https://image.pollinations.ai/prompt
+      - IMAGE_MODEL=flux
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: futurepred-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend

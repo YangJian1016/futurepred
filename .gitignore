@@ -1,0 +1,20 @@
+# Node
+frontend/node_modules
+frontend/dist
+
+# Python
+.venv
+backend/.venv
+backend/app/__pycache__
+backend/__pycache__
+backend/.pytest_cache
+*.pyc
+backend/data/assignment_state.json
+backend/data/generated
+
+# Env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
