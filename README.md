@@ -28,11 +28,18 @@
 
 在 `backend` 目录创建 `.env`（可从 `.env.example` 复制），至少填写：
 
+```powershell
+cd backend
+copy .env.example .env
+```
+
 - `SILICONFLOW_API_KEY=你的key`
 - `DASHSCOPE_API_KEY=你的key`
 - `IMAGE_PROVIDER_ORDER=siliconflow,dashscope,pollinations`
 
 这样默认就是：SiliconFlow 主通道 + DashScope 备通道 + Pollinations 兜底。
+
+注意：`.env` 已被 `.gitignore` 忽略，不会被推送到 GitHub。
 
 ### 1) 启动后端
 
