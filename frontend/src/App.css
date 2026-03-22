@@ -8,6 +8,29 @@
   position: relative;
 }
 
+.login-panel {
+  width: min(92vw, 440px);
+  margin: 4rem auto;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 1.2rem;
+  background:
+    linear-gradient(180deg, rgba(255, 212, 82, 0.2), transparent 45%),
+    var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  text-align: center;
+}
+
+.login-panel h1 {
+  margin: 0;
+}
+
+.login-panel p {
+  margin: 0;
+}
+
 .hero-header {
   border: 1px solid var(--border);
   border-radius: 22px;
@@ -24,6 +47,26 @@
   z-index: 20;
   backdrop-filter: blur(12px);
   box-shadow: 0 10px 24px rgba(138, 21, 56, 0.14);
+}
+
+.logout-corner {
+  position: fixed;
+  top: 12px;
+  right: 14px;
+  z-index: 50;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.78);
+  color: #6f6f6f;
+  box-shadow: none;
+  opacity: 0.72;
+}
+
+.logout-corner:hover {
+  opacity: 0.92;
 }
 
 .hero-header::before,
@@ -324,6 +367,11 @@ button:disabled {
 
   .hero-header {
     top: 8px;
+  }
+
+  .logout-corner {
+    top: 8px;
+    right: 8px;
   }
 
   .workspace-panel {

@@ -7,6 +7,7 @@
 - 前端调用摄像头拍照
 - 后端从 28 个高端职业中随机且不重复分配
 - 调用第三方模型实时生成未来职业形象图（支持多通道容灾）
+- 支持登录鉴权，未登录无法调用预测接口
 - 返回“正在预测未来职业”流程文案与真实生图结果
 - 28 人分配完会阻止继续分配，避免重复
 - 第三方生图失败时自动回滚职业名额
@@ -92,6 +93,9 @@ cp backend/.env.example backend/.env
 
 - `SILICONFLOW_API_KEY=你的key`
 - `DASHSCOPE_API_KEY=你的key`（可选备通道）
+- `AUTH_USERNAME=活动账号`
+- `AUTH_PASSWORD=活动密码`
+- `JWT_SECRET=随机长字符串`
 
 3) 一键启动
 
