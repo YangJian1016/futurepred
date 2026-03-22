@@ -6,17 +6,21 @@ import random
 import threading
 import uuid
 import base64
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from secrets import compare_digest
 from typing import Any
 from urllib.parse import quote
 
 from dotenv import load_dotenv
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+import jwt
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
-from .models import PredictRequest, PredictResponse, ResetRequest
+from .models import LoginRequest, LoginResponse, PredictRequest, PredictResponse, ResetRequest
 from .professions import HIGH_END_PROFESSIONS
 
 load_dotenv()
@@ -40,6 +44,12 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_MODEL = os.getenv("DASHSCOPE_MODEL", "wanx2.1-t2i-turbo")
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 ZHIPU_MODEL = os.getenv("ZHIPU_MODEL", "cogview-3-flash")
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "ChangeMe123!")
+JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
 
 PROFESSION_EN_LABELS = {
     "AI算法科学家": "AI research scientist",
@@ -159,6 +169,7 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Future Profession Predictor API", version="0.1.0")
 app.mount("/generated", StaticFiles(directory=str(GENERATED_DIR)), name="generated")
+auth_scheme = HTTPBearer(auto_error=False)
 
 origins = [
     origin.strip()
@@ -179,8 +190,54 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _create_access_token(subject: str) -> tuple[str, int]:
+    expire_delta = timedelta(minutes=JWT_EXPIRE_MINUTES)
+    expires_at = datetime.now(timezone.utc) + expire_delta
+    payload = {
+        "sub": subject,
+        "exp": expires_at,
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return token, int(expire_delta.total_seconds())
+
+
+def _require_auth(
+    credentials: HTTPAuthorizationCredentials | None = Depends(auth_scheme),
+) -> str:
+    if not AUTH_ENABLED:
+        return "anonymous"
+
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        subject = payload.get("sub", "")
+    except jwt.PyJWTError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录已失效，请重新登录") from error
+
+    if not isinstance(subject, str) or not compare_digest(subject, AUTH_USERNAME):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效登录凭证")
+
+    return subject
+
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+def login(payload: LoginRequest) -> LoginResponse:
+    if not AUTH_ENABLED:
+        token, expires_in = _create_access_token("anonymous")
+        return LoginResponse(access_token=token, expires_in=expires_in)
+
+    if not (compare_digest(payload.username, AUTH_USERNAME) and compare_digest(payload.password, AUTH_PASSWORD)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+
+    token, expires_in = _create_access_token(AUTH_USERNAME)
+    return LoginResponse(access_token=token, expires_in=expires_in)
+
+
 @app.get("/api/status")
-def assignment_status() -> dict[str, int]:
+def assignment_status(_: str = Depends(_require_auth)) -> dict[str, int]:
     return allocator.status()
 
 
@@ -424,7 +481,7 @@ def _generate_future_image_plan_b(
 
 
 @app.get("/api/providers/probe")
-def provider_probe() -> dict[str, Any]:
+def provider_probe(_: str = Depends(_require_auth)) -> dict[str, Any]:
     return {
         "order": IMAGE_PROVIDER_ORDER,
         "providers": {
@@ -458,7 +515,11 @@ def provider_probe() -> dict[str, Any]:
 
 
 @app.post("/api/predict", response_model=PredictResponse)
-def predict_future_profession(payload: PredictRequest, request: Request) -> PredictResponse:
+def predict_future_profession(
+    payload: PredictRequest,
+    request: Request,
+    _: str = Depends(_require_auth),
+) -> PredictResponse:
     if not payload.image_data.startswith("data:image"):
         raise HTTPException(status_code=400, detail="请上传有效的照片数据")
 
@@ -511,6 +572,6 @@ def predict_future_profession(payload: PredictRequest, request: Request) -> Pred
 
 
 @app.post("/api/admin/reset")
-def reset_assignments(payload: ResetRequest) -> dict[str, str]:
+def reset_assignments(payload: ResetRequest, _: str = Depends(_require_auth)) -> dict[str, str]:
     allocator.reset(payload.seed)
     return {"message": "职业池已重置"}

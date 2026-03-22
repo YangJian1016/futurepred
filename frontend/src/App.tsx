@@ -13,6 +13,12 @@ type PredictResponse = {
   image_provider?: string
 }
 
+type LoginResponse = {
+  access_token: string
+  token_type: string
+  expires_in: number
+}
+
 type ReviewItem = {
   predictionId: string
   name: string
@@ -22,6 +28,7 @@ type ReviewItem = {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 const REVIEW_STORAGE_KEY = 'futurepred-review-wall'
+const AUTH_STORAGE_KEY = 'futurepred-access-token'
 
 const getCameraErrorMessage = (error: unknown) => {
   if (!(error instanceof DOMException)) {
@@ -57,8 +64,16 @@ function App() {
   const [isPredicting, setIsPredicting] = useState(false)
   const [error, setError] = useState('')
   const [reviewList, setReviewList] = useState<ReviewItem[]>([])
+  const [token, setToken] = useState('')
+  const [loginName, setLoginName] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
 
   useEffect(() => {
+    const savedToken = localStorage.getItem(AUTH_STORAGE_KEY) || ''
+    setToken(savedToken)
+
     try {
       const cache = localStorage.getItem(REVIEW_STORAGE_KEY)
       if (!cache) {
@@ -76,6 +91,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(reviewList))
   }, [reviewList])
+
+  useEffect(() => {
+    if (token) {
+      localStorage.setItem(AUTH_STORAGE_KEY, token)
+      return
+    }
+    localStorage.removeItem(AUTH_STORAGE_KEY)
+  }, [token])
 
   useEffect(() => {
     return () => {
@@ -161,7 +184,10 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/api/predict`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           participant_name: participantName.trim(),
           image_data: capturedImage,
@@ -169,6 +195,10 @@ function App() {
       })
 
       const data = await response.json()
+      if (response.status === 401) {
+        setToken('')
+        throw new Error('登录已失效，请重新登录。')
+      }
       if (!response.ok) {
         throw new Error(data.detail ?? '预测失败，请重试。')
       }
@@ -196,8 +226,80 @@ function App() {
     }
   }
 
+  const login = async () => {
+    if (!loginName.trim() || !loginPassword.trim()) {
+      setLoginError('请输入账号和密码。')
+      return
+    }
+
+    setLoginError('')
+    setIsLoggingIn(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: loginName.trim(),
+          password: loginPassword,
+        }),
+      })
+
+      const data: LoginResponse | { detail?: string } = await response.json()
+      if (!response.ok || !('access_token' in data)) {
+        throw new Error((data as { detail?: string }).detail ?? '登录失败，请重试。')
+      }
+
+      setToken(data.access_token)
+      setLoginPassword('')
+      setStatus('登录成功，请开启摄像头。')
+    } catch (authError) {
+      setLoginError(authError instanceof Error ? authError.message : '登录失败，请重试。')
+    } finally {
+      setIsLoggingIn(false)
+    }
+  }
+
+  const logout = () => {
+    setToken('')
+    setResult(null)
+    setCapturedImage('')
+    setIsCameraOn(false)
+    setStatus('已退出登录')
+  }
+
+  if (!token) {
+    return (
+      <main className="container">
+        <section className="login-panel">
+          <h1>408班十岁礼登录</h1>
+          <p>请输入活动账号后开始未来职业预测。</p>
+          <input
+            type="text"
+            placeholder="账号"
+            value={loginName}
+            onChange={(event) => setLoginName(event.target.value)}
+            maxLength={64}
+          />
+          <input
+            type="password"
+            placeholder="密码"
+            value={loginPassword}
+            onChange={(event) => setLoginPassword(event.target.value)}
+            maxLength={128}
+          />
+          <button onClick={login} disabled={isLoggingIn}>
+            {isLoggingIn ? '登录中...' : '登录并开始'}
+          </button>
+          {loginError && <p className="error">{loginError}</p>}
+        </section>
+      </main>
+    )
+  }
+
   return (
     <main className="container">
+      <button className="logout-corner" onClick={logout}>退出登录</button>
+
       <header className="hero-header">
         <div className="hero-badge">英特外国语小学 408班</div>
         <div className="bee-row" aria-hidden="true">
