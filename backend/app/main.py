@@ -126,7 +126,7 @@ class RoleAllocator:
         del participant_name
         with self._lock:
             if not self._queue:
-                raise ValueError("28个职业已全部分配完成，请联系管理员重置。")
+                self._reset_internal(seed=self._seed)
 
             profession = self._queue.pop(0)
             self._assigned.append(profession)

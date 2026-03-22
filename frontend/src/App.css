@@ -1,34 +1,216 @@
 .container {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  max-width: 960px;
+  gap: 1.25rem;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 2rem 1rem;
+  position: relative;
+}
+
+.hero-header {
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  padding: 1.25rem 1.25rem 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 212, 82, 0.22), transparent 45%),
+    radial-gradient(circle at 10% 10%, var(--accent-bg) 0, transparent 40%),
+    radial-gradient(circle at 90% 5%, var(--social-bg) 0, transparent 35%),
+    var(--bg);
+  text-align: center;
+  position: relative;
+  position: sticky;
+  top: 10px;
+  z-index: 20;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 24px rgba(138, 21, 56, 0.14);
+}
+
+.hero-header::before,
+.hero-header::after {
+  content: '🐝';
+  position: absolute;
+  top: -12px;
+  font-size: 22px;
+}
+
+.hero-header::before {
+  left: 12px;
+}
+
+.hero-header::after {
+  right: 12px;
+}
+
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.65rem;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  background: #ffd54f;
+  color: #6a3700;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  box-shadow: 0 8px 20px rgba(255, 184, 0, 0.18);
+}
+
+.bee-row {
+  display: flex;
+  justify-content: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.2rem;
+}
+
+h1,
+h2 {
+  color: var(--text-h);
 }
 
 h1 {
-  margin-bottom: 0.25rem;
+  margin: 0 0 0.35rem;
+  font-size: clamp(1.5rem, 4vw, 2rem);
 }
 
 .remaining {
   margin-top: 0.5rem;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.review-panel {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 1rem;
+  background:
+    linear-gradient(135deg, var(--social-bg), transparent 60%),
+    var(--bg);
+}
+
+.review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.review-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.review-header span {
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+}
+
+.review-subtitle {
+  margin: 0 0 0.85rem;
+  color: var(--text-h);
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.review-empty {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.75rem;
+}
+
+.review-card {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg);
+  transition: transform 0.2s ease;
+}
+
+.review-card:hover {
+  transform: translateY(-2px);
+}
+
+.review-card::before {
+  content: '🐝';
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  font-size: 0.95rem;
+}
+
+.review-card {
+  position: relative;
+}
+
+.review-image {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+}
+
+.review-name {
+  margin: 0;
+  padding: 0.5rem 0.5rem 0.15rem;
+  text-align: center;
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.review-profession {
+  margin: 0;
+  padding: 0 0.5rem 0.5rem;
+  text-align: center;
+  font-size: 0.8rem;
 }
 
 .camera-panel {
   display: grid;
   grid-template-columns: 1fr;
   gap: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 1rem;
+  background: var(--bg);
+}
+
+.workspace-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.camera-panel::before {
+  content: '408班大蜜蜂拍照区';
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  background: #fff1b8;
+  color: #7a4600;
+  font-size: 0.88rem;
+  font-weight: 700;
 }
 
 .camera-frame {
-  width: min(90vw, 520px);
+  width: min(90vw, 500px);
   aspect-ratio: 1 / 1;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: 18px;
   border: 1px solid var(--border);
-  background: #000;
+  background: var(--accent-bg);
 }
 
 .preview {
@@ -43,12 +225,20 @@ h1 {
   gap: 0.75rem;
 }
 
+.controls input,
+.controls .button-row,
+.status,
+.error {
+  width: min(90vw, 500px);
+}
+
 input {
   height: 40px;
-  border-radius: 8px;
+  border-radius: 12px;
   border: 1px solid var(--border);
   padding: 0 12px;
   font-size: 15px;
+  background: var(--bg);
 }
 
 .button-row {
@@ -58,13 +248,15 @@ input {
 }
 
 button {
-  height: 38px;
-  border-radius: 8px;
+  height: 40px;
+  border-radius: 999px;
   border: 1px solid var(--accent-border);
-  background: var(--accent-bg);
-  color: var(--text-h);
-  padding: 0 12px;
+  background: linear-gradient(135deg, #f44336, #ff9f1c);
+  color: #fff9e9;
+  padding: 0 14px;
+  font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 8px 16px rgba(215, 38, 56, 0.18);
 }
 
 button:disabled {
@@ -77,25 +269,69 @@ button:disabled {
 }
 
 .error {
-  color: #c9302c;
+  color: var(--accent);
   font-size: 14px;
 }
 
 .result-panel {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 20px;
   padding: 1rem;
+  background:
+    linear-gradient(135deg, var(--accent-bg), transparent 55%),
+    var(--bg);
+  text-align: center;
+}
+
+.result-panel-inline {
+  min-height: 100%;
+}
+
+.result-placeholder {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2rem 1rem;
+}
+
+.result-placeholder-art {
+  width: 92px;
+  height: 92px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #fff1b8;
+  font-size: 2rem;
+}
+
+.result-panel h2::before {
+  content: '🐝 ';
 }
 
 .result-image {
   margin-top: 0.5rem;
   width: min(90vw, 420px);
-  border-radius: 10px;
+  border-radius: 16px;
 }
 
 @media (max-width: 900px) {
   .container {
     padding: 1rem;
+  }
+
+  .hero-header {
+    top: 8px;
+  }
+
+  .workspace-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .review-header h2 {
+    font-size: 1rem;
   }
 
   button {

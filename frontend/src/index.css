@@ -1,11 +1,12 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
+  --text: #5b3b2a;
+  --text-h: #8a1538;
+  --bg: #fffaf4;
+  --border: #f4d6a5;
+  --accent: #d72638;
+  --accent-bg: rgba(215, 38, 56, 0.12);
+  --accent-border: rgba(215, 38, 56, 0.35);
+  --social-bg: rgba(255, 205, 112, 0.2);
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -16,13 +17,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
+    --text: #f8d7b3;
+    --text-h: #ffd7a0;
+    --bg: #2b1020;
+    --border: #6f2b40;
+    --accent: #ff6b6b;
+    --accent-bg: rgba(255, 107, 107, 0.18);
+    --accent-border: rgba(255, 170, 130, 0.6);
+    --social-bg: rgba(255, 184, 108, 0.18);
   }
 }
 
