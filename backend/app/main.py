@@ -32,6 +32,8 @@ IMAGE_PROVIDER_ORDER = [
     for provider in os.getenv("IMAGE_PROVIDER_ORDER", "siliconflow,dashscope,pollinations").split(",")
     if provider.strip()
 ]
+PLAN_B_ENABLED = os.getenv("PLAN_B_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+PLAN_B_REFERENCE_MODEL = os.getenv("PLAN_B_REFERENCE_MODEL", "Qwen/Qwen-Image-Edit-2509")
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
 SILICONFLOW_MODEL = os.getenv("SILICONFLOW_MODEL", "black-forest-labs/FLUX.1-schnell")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
@@ -208,6 +210,27 @@ def _download_image(client: httpx.Client, url: str, output_path: Path) -> None:
     output_path.write_bytes(content)
 
 
+def _parse_image_data_url(image_data: str) -> tuple[str, bytes]:
+    if not image_data.startswith("data:image"):
+        raise ValueError("无效的图片 data URL")
+
+    try:
+        header, body = image_data.split(",", 1)
+    except ValueError as error:
+        raise ValueError("图片数据格式错误") from error
+
+    mime_type = "image/jpeg"
+    if ";" in header:
+        mime_type = header[5:].split(";", 1)[0] or "image/jpeg"
+
+    try:
+        binary = base64.b64decode(body)
+    except Exception as error:
+        raise ValueError("图片 base64 解码失败") from error
+
+    return mime_type, binary
+
+
 def _generate_with_siliconflow(client: httpx.Client, prompt: str, seed: str, output_path: Path) -> str:
     if not SILICONFLOW_API_KEY:
         raise ValueError("SiliconFlow 未配置 API Key")
@@ -236,6 +259,49 @@ def _generate_with_siliconflow(client: httpx.Client, prompt: str, seed: str, out
         output_path.write_bytes(base64.b64decode(image_b64))
         return "siliconflow"
     raise ValueError("SiliconFlow 未返回图片链接")
+
+
+def _generate_with_siliconflow_reference(
+    client: httpx.Client,
+    profession_label: str,
+    reference_image_data: str,
+    seed: str,
+    output_path: Path,
+) -> str:
+    if not SILICONFLOW_API_KEY:
+        raise ValueError("SiliconFlow 未配置 API Key")
+
+    reference_prompt = (
+        "Preserve the same person identity and facial features from the input image. "
+        f"Create a realistic adult professional portrait as {profession_label}, "
+        "formal outfit, clean studio lighting, highly detailed photo"
+    )
+
+    response = client.post(
+        "https://api.siliconflow.cn/v1/images/generations",
+        headers={"Authorization": f"Bearer {SILICONFLOW_API_KEY}"},
+        json={
+            "model": PLAN_B_REFERENCE_MODEL,
+            "prompt": reference_prompt,
+            "image": reference_image_data,
+            "size": "768x768",
+            "seed": int(seed),
+            "response_format": "url",
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+    item = ((data.get("images") or [{}])[0]) if data.get("images") else ((data.get("data") or [{}])[0])
+    image_url = item.get("url")
+    image_b64 = item.get("b64_json") or item.get("base64")
+
+    if image_url:
+        _download_image(client, image_url, output_path)
+        return "siliconflow-plan-b"
+    if image_b64:
+        output_path.write_bytes(base64.b64decode(image_b64))
+        return "siliconflow-plan-b"
+    raise ValueError("SiliconFlow Plan B 未返回图片链接")
 
 
 def _generate_with_dashscope(client: httpx.Client, prompt: str, output_path: Path) -> str:
@@ -327,6 +393,36 @@ def _generate_future_image(prompt: str, seed: str, output_path: Path) -> str:
     raise ValueError("; ".join(failures) if failures else "未配置可用生图通道")
 
 
+def _generate_future_image_plan_b(
+    prompt: str,
+    profession_label: str,
+    seed: str,
+    output_path: Path,
+    reference_image_data: str,
+) -> str:
+    failures: list[str] = []
+
+    with httpx.Client(timeout=90) as client:
+        if PLAN_B_ENABLED:
+            try:
+                return _generate_with_siliconflow_reference(
+                    client=client,
+                    profession_label=profession_label,
+                    reference_image_data=reference_image_data,
+                    seed=seed,
+                    output_path=output_path,
+                )
+            except (httpx.HTTPError, OSError, ValueError) as error:
+                failures.append(f"plan-b: {error}")
+
+        try:
+            return _generate_future_image(prompt, seed, output_path)
+        except ValueError as error:
+            failures.append(f"fallback: {error}")
+
+    raise ValueError("; ".join(failures))
+
+
 @app.get("/api/providers/probe")
 def provider_probe() -> dict[str, Any]:
     return {
@@ -336,6 +432,7 @@ def provider_probe() -> dict[str, Any]:
                 "configured": bool(SILICONFLOW_API_KEY),
                 "endpoint": "https://api.siliconflow.cn/v1/images/generations",
                 "model": SILICONFLOW_MODEL,
+                "plan_b_model": PLAN_B_REFERENCE_MODEL,
             },
             "dashscope": {
                 "configured": bool(DASHSCOPE_API_KEY),
@@ -353,6 +450,10 @@ def provider_probe() -> dict[str, Any]:
                 "model": IMAGE_MODEL,
             },
         },
+        "plan_b": {
+            "enabled": PLAN_B_ENABLED,
+            "reference_model": PLAN_B_REFERENCE_MODEL,
+        },
     }
 
 
@@ -360,6 +461,11 @@ def provider_probe() -> dict[str, Any]:
 def predict_future_profession(payload: PredictRequest, request: Request) -> PredictResponse:
     if not payload.image_data.startswith("data:image"):
         raise HTTPException(status_code=400, detail="请上传有效的照片数据")
+
+    try:
+        _parse_image_data_url(payload.image_data)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     try:
         profession, profession_index, total = allocator.next_role(payload.participant_name)
@@ -378,7 +484,13 @@ def predict_future_profession(payload: PredictRequest, request: Request) -> Pred
     output_path = GENERATED_DIR / filename
 
     try:
-        image_provider = _generate_future_image(image_prompt, seed_value, output_path)
+        image_provider = _generate_future_image_plan_b(
+            prompt=image_prompt,
+            profession_label=profession_label,
+            seed=seed_value,
+            output_path=output_path,
+            reference_image_data=payload.image_data,
+        )
     except (httpx.HTTPError, OSError, ValueError) as error:
         allocator.rollback_role(profession)
         raise HTTPException(status_code=502, detail=f"第三方生图服务暂不可用：{error}") from error

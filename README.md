@@ -120,6 +120,8 @@ curl http://127.0.0.1:8000/health
 - `FRONTEND_ORIGIN`：允许的前端域名
 - `PUBLIC_BASE_URL`：返回图片 URL 时使用的公网 API 域名
 - `IMAGE_PROVIDER_ORDER`：容灾顺序，默认 `siliconflow,dashscope,pollinations`
+- `PLAN_B_ENABLED`：是否启用“参考图保留身份”路径（默认 `true`）
+- `PLAN_B_REFERENCE_MODEL`：参考图编辑模型（默认 `Qwen/Qwen-Image-Edit-2509`）
 - `SILICONFLOW_API_KEY` / `SILICONFLOW_MODEL`
 - `DASHSCOPE_API_KEY` / `DASHSCOPE_MODEL`
 - `ZHIPU_API_KEY` / `ZHIPU_MODEL`（可选扩展）
