@@ -10,9 +10,18 @@ type PredictResponse = {
   status_text: string
   image_prompt: string
   generated_image_url: string
+  image_provider?: string
+}
+
+type ReviewItem = {
+  predictionId: string
+  name: string
+  profession: string
+  imageUrl: string
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
+const REVIEW_STORAGE_KEY = 'futurepred-review-wall'
 
 const getCameraErrorMessage = (error: unknown) => {
   if (!(error instanceof DOMException)) {
@@ -47,14 +56,26 @@ function App() {
   const [isCameraOn, setIsCameraOn] = useState(false)
   const [isPredicting, setIsPredicting] = useState(false)
   const [error, setError] = useState('')
-  const [remaining, setRemaining] = useState<number | null>(null)
+  const [reviewList, setReviewList] = useState<ReviewItem[]>([])
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/status`)
-      .then((res) => res.json())
-      .then((data) => setRemaining(data.remaining))
-      .catch(() => setRemaining(null))
+    try {
+      const cache = localStorage.getItem(REVIEW_STORAGE_KEY)
+      if (!cache) {
+        return
+      }
+      const parsed = JSON.parse(cache) as ReviewItem[]
+      if (Array.isArray(parsed)) {
+        setReviewList(parsed)
+      }
+    } catch {
+      setReviewList([])
+    }
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(reviewList))
+  }, [reviewList])
 
   useEffect(() => {
     return () => {
@@ -152,9 +173,19 @@ function App() {
         throw new Error(data.detail ?? '预测失败，请重试。')
       }
 
+      const displayName = participantName.trim() || `小朋友${data.profession_index}`
+
       setResult(data)
-      setRemaining(data.total_professions - data.profession_index)
       setStatus('预测完成')
+      setReviewList((prev) => [
+        {
+          predictionId: data.prediction_id,
+          name: displayName,
+          profession: data.profession,
+          imageUrl: data.generated_image_url,
+        },
+        ...prev.filter((item) => item.predictionId !== data.prediction_id),
+      ])
     } catch (predictError) {
       setError(
         predictError instanceof Error ? predictError.message : '请求失败，请稍后再试。',
@@ -167,57 +198,91 @@ function App() {
 
   return (
     <main className="container">
-      <header>
+      <header className="hero-header">
+        <div className="hero-badge">英特外国语小学 408班</div>
+        <div className="bee-row" aria-hidden="true">
+          <span>🐝</span>
+          <span>🐝</span>
+          <span>🐝</span>
+        </div>
         <h1>AI 未来职业预测</h1>
-        <p>正在预测未来职业，结果为高端职业方向（28人唯一不重复）</p>
-        <p className="remaining">
-          {remaining === null ? '剩余名额：读取中...' : `剩余名额：${remaining}`}
-        </p>
+        <p>🎉 十岁礼特别环节：408班大蜜蜂勇敢出发，一起预测闪闪发光的未来职业</p>
       </header>
 
-      <section className="camera-panel">
-        <div className="camera-frame">
-          {capturedImage ? (
-            <img src={capturedImage} alt="captured" className="preview" />
-          ) : (
-            <video ref={videoRef} autoPlay playsInline muted className="preview" />
-          )}
+      <section className="review-panel">
+        <div className="review-header">
+          <h2>未来职业回顾墙</h2>
+          <span>{reviewList.length} / 28</span>
         </div>
+        <p className="review-subtitle">英特外国语小学408班 · 大蜜蜂十岁礼纪念墙</p>
 
-        <div className="controls">
-          <input
-            type="text"
-            placeholder="可选：输入小朋友姓名"
-            value={participantName}
-            onChange={(event) => setParticipantName(event.target.value)}
-            maxLength={50}
-          />
-          <div className="button-row">
-            <button onClick={startCamera}>开启摄像头</button>
-            <button onClick={stopCamera} disabled={!isCameraOn}>
-              关闭摄像头
-            </button>
-            <button onClick={takePhoto} disabled={!isCameraOn}>
-              拍照
-            </button>
-            <button onClick={predict} disabled={isPredicting || !capturedImage}>
-              {isPredicting ? '预测中...' : '预测未来职业'}
-            </button>
+        {reviewList.length === 0 ? (
+          <p className="review-empty">完成预测后，照片会展示在这里，方便全班一起回顾。</p>
+        ) : (
+          <div className="review-grid">
+            {reviewList.map((item) => (
+              <article key={item.predictionId} className="review-card">
+                <img src={item.imageUrl} alt={item.name} className="review-image" />
+                <p className="review-name">{item.name}</p>
+                <p className="review-profession">{item.profession}</p>
+              </article>
+            ))}
           </div>
-          <p className="status">{status}</p>
-          {error && <p className="error">{error}</p>}
-        </div>
+        )}
       </section>
 
-      {result && (
-        <section className="result-panel">
-          <h2>预测结果：{result.profession}</h2>
-          <p>
-            分配序号：{result.profession_index}/{result.total_professions}
-          </p>
-          <img src={result.generated_image_url} alt={result.profession} className="result-image" />
+      <section className="workspace-panel">
+        <section className="camera-panel">
+          <div className="camera-frame">
+            {capturedImage ? (
+              <img src={capturedImage} alt="captured" className="preview" />
+            ) : (
+              <video ref={videoRef} autoPlay playsInline muted className="preview" />
+            )}
+          </div>
+
+          <div className="controls">
+            <input
+              type="text"
+              placeholder="可选：输入小朋友姓名"
+              value={participantName}
+              onChange={(event) => setParticipantName(event.target.value)}
+              maxLength={50}
+            />
+            <div className="button-row">
+              <button onClick={startCamera}>开启摄像头</button>
+              <button onClick={stopCamera} disabled={!isCameraOn}>
+                关闭摄像头
+              </button>
+              <button onClick={takePhoto} disabled={!isCameraOn}>
+                拍照
+              </button>
+              <button onClick={predict} disabled={isPredicting || !capturedImage}>
+                {isPredicting ? '预测中...' : '预测未来职业'}
+              </button>
+            </div>
+            <p className="status">{status}</p>
+            {error && <p className="error">{error}</p>}
+          </div>
         </section>
-      )}
+
+        <section className="result-panel result-panel-inline">
+          <h2>{result ? `预测结果：${result.profession}` : '未来职业结果区'}</h2>
+          {result ? (
+            <>
+              <p>
+                分配序号：{result.profession_index}/{result.total_professions}
+              </p>
+              <img src={result.generated_image_url} alt={result.profession} className="result-image" />
+            </>
+          ) : (
+            <div className="result-placeholder">
+              <div className="result-placeholder-art" aria-hidden="true">🐝</div>
+              <p>拍照并完成预测后，未来职业形象会立即展示在这里。</p>
+            </div>
+          )}
+        </section>
+      </section>
     </main>
   )
 }
