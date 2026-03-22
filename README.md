@@ -71,6 +71,42 @@ docker compose up --build
 - 前端：`http://localhost:5173`
 - 后端健康检查：`http://localhost:8000/health`
 
+## 云部署（最简）
+
+适合一台云服务器快速上线（Ubuntu/CentOS 均可，需已安装 Docker + Docker Compose）。
+
+1) 拉取代码
+
+```bash
+git clone https://github.com/YangJian1016/futurepred.git
+cd futurepred
+```
+
+2) 配置后端密钥
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+编辑 `backend/.env`，至少填写：
+
+- `SILICONFLOW_API_KEY=你的key`
+- `DASHSCOPE_API_KEY=你的key`（可选备通道）
+
+3) 一键启动
+
+```bash
+docker compose up -d --build
+```
+
+4) 验证服务
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+返回 `{"status":"ok"}` 即表示后端已正常运行。
+
 ## API
 
 - `GET /health` 健康检查
