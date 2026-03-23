@@ -31,3 +31,21 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class HistoryItem(BaseModel):
+    prediction_id: str
+    participant_name: str
+    profession: str
+    generated_image_url: str
+    image_provider: str
+    created_at: str
+
+
+class HistoryListResponse(BaseModel):
+    items: list[HistoryItem]
+    count: int
+
+
+class DeleteSelectedRequest(BaseModel):
+    prediction_ids: list[str] = Field(default_factory=list)
