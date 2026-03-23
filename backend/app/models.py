@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class PredictRequest(BaseModel):
-    participant_name: str = Field(default="", max_length=50)
+    participant_name: str = Field(..., min_length=1, max_length=50)
     image_data: str = Field(..., description="Base64 image data URL from frontend camera")
 
 
