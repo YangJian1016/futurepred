@@ -1,12 +1,12 @@
 :root {
-  --text: #5b3b2a;
-  --text-h: #8a1538;
-  --bg: #fffaf4;
-  --border: #f4d6a5;
-  --accent: #d72638;
-  --accent-bg: rgba(215, 38, 56, 0.12);
-  --accent-border: rgba(215, 38, 56, 0.35);
-  --social-bg: rgba(255, 205, 112, 0.2);
+  --text: #c5ecff;
+  --text-h: #f2fdff;
+  --bg: #060f24;
+  --border: #2a4a78;
+  --accent: #57dfff;
+  --accent-bg: rgba(87, 223, 255, 0.16);
+  --accent-border: rgba(140, 228, 255, 0.55);
+  --social-bg: rgba(110, 142, 255, 0.24);
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -17,14 +17,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #f8d7b3;
-    --text-h: #ffd7a0;
-    --bg: #2b1020;
-    --border: #6f2b40;
-    --accent: #ff6b6b;
-    --accent-bg: rgba(255, 107, 107, 0.18);
-    --accent-border: rgba(255, 170, 130, 0.6);
-    --social-bg: rgba(255, 184, 108, 0.18);
+    --text: #c5ecff;
+    --text-h: #f2fdff;
+    --bg: #060f24;
+    --border: #2a4a78;
+    --accent: #57dfff;
+    --accent-bg: rgba(87, 223, 255, 0.16);
+    --accent-border: rgba(140, 228, 255, 0.55);
+    --social-bg: rgba(110, 142, 255, 0.24);
   }
 }
 
@@ -35,5 +35,10 @@
 body {
   margin: 0;
   color: var(--text);
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 12% 14%, rgba(32, 97, 255, 0.24), transparent 36%),
+    radial-gradient(circle at 88% 8%, rgba(74, 244, 255, 0.18), transparent 32%),
+    radial-gradient(circle at 62% 78%, rgba(122, 102, 255, 0.2), transparent 38%),
+    var(--bg);
+  background-attachment: fixed;
 }

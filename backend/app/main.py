@@ -6,6 +6,7 @@ import random
 import threading
 import uuid
 import base64
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from secrets import compare_digest
@@ -50,6 +51,7 @@ AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "ChangeMe123!")
 JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
+NAME_PATTERN = re.compile(r"^[A-Za-z\u4e00-\u9fff]+(?: [A-Za-z\u4e00-\u9fff]+)*$")
 
 PROFESSION_EN_LABELS = {
     "AI算法科学家": "AI research scientist",
@@ -520,6 +522,12 @@ def predict_future_profession(
     request: Request,
     _: str = Depends(_require_auth),
 ) -> PredictResponse:
+    participant_name = payload.participant_name.strip()
+    if not participant_name:
+        raise HTTPException(status_code=400, detail="请输入姓名")
+    if not NAME_PATTERN.fullmatch(participant_name):
+        raise HTTPException(status_code=400, detail="姓名仅支持中文、英文和空格")
+
     if not payload.image_data.startswith("data:image"):
         raise HTTPException(status_code=400, detail="请上传有效的照片数据")
 
@@ -529,7 +537,7 @@ def predict_future_profession(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     try:
-        profession, profession_index, total = allocator.next_role(payload.participant_name)
+        profession, profession_index, total = allocator.next_role(participant_name)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -560,7 +568,7 @@ def predict_future_profession(
 
     return PredictResponse(
         prediction_id=prediction_id,
-        participant_name=payload.participant_name,
+        participant_name=participant_name,
         profession=profession,
         profession_index=profession_index,
         total_professions=total,
