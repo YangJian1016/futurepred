@@ -21,13 +21,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
-from .models import LoginRequest, LoginResponse, PredictRequest, PredictResponse, ResetRequest
+from .models import (
+    DeleteSelectedRequest,
+    HistoryItem,
+    HistoryListResponse,
+    LoginRequest,
+    LoginResponse,
+    PredictRequest,
+    PredictResponse,
+    ResetRequest,
+)
 from .professions import HIGH_END_PROFESSIONS
 
 load_dotenv()
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 STATE_FILE = DATA_DIR / "assignment_state.json"
+HISTORY_FILE = DATA_DIR / "prediction_history.json"
 GENERATED_DIR = DATA_DIR / "generated"
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "flux")
 POLLINATIONS_BASE_URL = os.getenv("POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt")
@@ -166,7 +176,58 @@ class RoleAllocator:
             self._reset_internal(seed)
 
 
+class PredictionHistoryStore:
+    def __init__(self, history_file: Path) -> None:
+        self._history_file = history_file
+        self._lock = threading.Lock()
+        self._records: list[dict[str, str]] = []
+        self._history_file.parent.mkdir(parents=True, exist_ok=True)
+        self._load_or_init()
+
+    def _load_or_init(self) -> None:
+        if not self._history_file.exists():
+            self._persist()
+            return
+        try:
+            raw = json.loads(self._history_file.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                self._records = [record for record in raw if isinstance(record, dict)]
+        except (json.JSONDecodeError, OSError):
+            self._records = []
+            self._persist()
+
+    def _persist(self) -> None:
+        self._history_file.write_text(
+            json.dumps(self._records, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def list(self) -> list[dict[str, str]]:
+        with self._lock:
+            return list(self._records)
+
+    def add(self, record: dict[str, str]) -> None:
+        with self._lock:
+            self._records.insert(0, record)
+            self._persist()
+
+    def delete_selected(self, prediction_ids: set[str]) -> list[dict[str, str]]:
+        with self._lock:
+            deleted = [record for record in self._records if record.get("prediction_id", "") in prediction_ids]
+            self._records = [record for record in self._records if record.get("prediction_id", "") not in prediction_ids]
+            self._persist()
+            return deleted
+
+    def clear_all(self) -> list[dict[str, str]]:
+        with self._lock:
+            deleted = list(self._records)
+            self._records = []
+            self._persist()
+            return deleted
+
+
 allocator = RoleAllocator(HIGH_END_PROFESSIONS, STATE_FILE)
+history_store = PredictionHistoryStore(HISTORY_FILE)
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Future Profession Predictor API", version="0.1.0")
@@ -247,6 +308,14 @@ def _build_public_image_url(request: Request, filename: str) -> str:
     if PUBLIC_BASE_URL:
         return f"{PUBLIC_BASE_URL.rstrip('/')}/generated/{filename}"
     return str(request.url_for("generated", path=filename))
+
+
+def _remove_generated_image(filename: str) -> None:
+    if not filename:
+        return
+    target = GENERATED_DIR / filename
+    if target.exists():
+        target.unlink(missing_ok=True)
 
 
 def _download_image(client: httpx.Client, url: str, output_path: Path) -> None:
@@ -332,8 +401,10 @@ def _generate_with_siliconflow_reference(
 
     reference_prompt = (
         "Preserve the same person identity and facial features from the input image. "
-        f"Create a realistic adult professional portrait as {profession_label}, "
-        "formal outfit, clean studio lighting, highly detailed photo"
+        f"Create a photorealistic portrait of the same person as a {profession_label}, "
+        "age around 20 years old young adult, warm and friendly smile, refined and attractive appearance, "
+        "clear natural skin texture, professional styling, formal outfit, soft cinematic studio lighting, "
+        "high detail, clean background, school-ceremony friendly"
     )
 
     response = client.post(
@@ -516,6 +587,47 @@ def provider_probe(_: str = Depends(_require_auth)) -> dict[str, Any]:
     }
 
 
+@app.get("/api/admin/history", response_model=HistoryListResponse)
+def admin_history(request: Request, _: str = Depends(_require_auth)) -> HistoryListResponse:
+    records = history_store.list()
+    items = [
+        HistoryItem(
+            prediction_id=record.get("prediction_id", ""),
+            participant_name=record.get("participant_name", ""),
+            profession=record.get("profession", ""),
+            generated_image_url=_build_public_image_url(request, record.get("filename", "")),
+            image_provider=record.get("image_provider", "unknown"),
+            created_at=record.get("created_at", ""),
+        )
+        for record in records
+        if record.get("prediction_id") and record.get("filename")
+    ]
+    return HistoryListResponse(items=items, count=len(items))
+
+
+@app.post("/api/admin/history/delete-selected")
+def admin_delete_selected(payload: DeleteSelectedRequest, _: str = Depends(_require_auth)) -> dict[str, int]:
+    prediction_ids = {prediction_id.strip() for prediction_id in payload.prediction_ids if prediction_id.strip()}
+    if not prediction_ids:
+        return {"deleted": 0}
+
+    deleted_records = history_store.delete_selected(prediction_ids)
+    for record in deleted_records:
+        _remove_generated_image(record.get("filename", ""))
+
+    return {"deleted": len(deleted_records)}
+
+
+@app.post("/api/admin/history/clear-reset")
+def admin_clear_reset(_: str = Depends(_require_auth)) -> dict[str, int]:
+    deleted_records = history_store.clear_all()
+    for record in deleted_records:
+        _remove_generated_image(record.get("filename", ""))
+
+    allocator.reset(seed=None)
+    return {"deleted": len(deleted_records)}
+
+
 @app.post("/api/predict", response_model=PredictResponse)
 def predict_future_profession(
     payload: PredictRequest,
@@ -546,8 +658,10 @@ def predict_future_profession(
     profession_label = PROFESSION_EN_LABELS.get(profession, profession)
     image_prompt = (
         "masterpiece, photorealistic portrait, future career professional, "
-        f"adult {profession_label}, high-end uniform, confident expression, "
-        "clean studio lighting, ultra detailed, 85mm lens, cinematic"
+        f"{profession_label}, around 20 years old young adult, "
+        "warm friendly smile, refined attractive appearance, clean natural skin, "
+        "professional formal outfit, soft cinematic lighting, high detail, 85mm lens, "
+        "clean background, uplifting and school-ceremony friendly"
     )
     filename = f"{prediction_id}.jpg"
     output_path = GENERATED_DIR / filename
@@ -565,6 +679,16 @@ def predict_future_profession(
         raise HTTPException(status_code=502, detail=f"第三方生图服务暂不可用：{error}") from error
 
     generated_image_url = _build_public_image_url(request, filename)
+    history_store.add(
+        {
+            "prediction_id": prediction_id,
+            "participant_name": participant_name,
+            "profession": profession,
+            "filename": filename,
+            "image_provider": image_provider,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
     return PredictResponse(
         prediction_id=prediction_id,
