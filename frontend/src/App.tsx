@@ -41,7 +41,7 @@ type HistoryListResponse = {
   count: number
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
+const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
 const REVIEW_STORAGE_KEY = 'futurepred-review-wall'
 const AUTH_STORAGE_KEY = 'futurepred-access-token'
 const NAME_PATTERN = /^[A-Za-z\u4e00-\u9fff]+(?: [A-Za-z\u4e00-\u9fff]+)*$/
