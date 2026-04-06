@@ -13,6 +13,7 @@ With this layout, browser requests are same-origin and CORS is usually not trigg
 - Ubuntu 22.04+ / Debian 12+ (or equivalent)
 - `sudo` privileges
 - Installed packages: `nginx`, `python3`, `python3-venv`, `python3-pip`, `nodejs`, `npm`
+- If available, Python 3.14 is preferred for consistency with your current environment.
 
 Install packages (Debian/Ubuntu):
 
@@ -44,6 +45,11 @@ What the script does:
 - Installs systemd unit: `futurepred-backend.service`
 - Installs Nginx config: `/etc/nginx/conf.d/futurepred.conf`
 - Starts backend service and reloads Nginx
+
+Interpreter selection in script:
+
+- Prefer `python3.14` if installed
+- Fallback to `python3`
 
 ## 4. Configure Secrets
 

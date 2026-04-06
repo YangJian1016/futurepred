@@ -10,6 +10,15 @@ SERVICE_NAME="futurepred-backend.service"
 SYSTEMD_TARGET="/etc/systemd/system/$SERVICE_NAME"
 NGINX_TARGET="/etc/nginx/conf.d/futurepred.conf"
 
+if command -v python3.14 >/dev/null 2>&1; then
+  PYTHON_BIN="python3.14"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+else
+  echo "ERROR: python3.14/python3 not found" >&2
+  exit 1
+fi
+
 echo "[1/7] Build frontend"
 cd "$FRONTEND_DIR"
 npm ci
@@ -31,7 +40,7 @@ sudo rsync -a --delete \
 
 echo "[4/7] Create backend venv and install requirements"
 cd "$INSTALL_ROOT/backend"
-python3 -m venv .venv
+"$PYTHON_BIN" -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 

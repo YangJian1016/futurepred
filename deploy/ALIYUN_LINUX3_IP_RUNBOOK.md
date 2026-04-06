@@ -36,7 +36,7 @@ git checkout feature/linux-deploy-prep
 
 ```bash
 cd /opt/futurepred/backend
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
@@ -53,6 +53,8 @@ cp -n .env.example .env
 - `SILICONFLOW_API_KEY=你的key`
 
 说明：当前是 IP 同源访问（前端与 API 同主机同端口），浏览器不会产生跨域问题。
+
+如果你的系统里 `python3` 已指向 3.14.3，也可以继续用 `python3 -m venv .venv`。
 
 ## 4. 构建前端并发布静态资源
 

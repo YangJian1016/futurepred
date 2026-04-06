@@ -164,6 +164,28 @@ curl http://127.0.0.1/health
 
 返回 `{"status":"ok"}` 表示 Nginx 到后端链路正常。
 
+## Linux 部署准备（develop 分支）
+
+已补充 Linux 生产部署所需文件：
+
+- `deploy/LINUX_DEPLOY.md`
+- `deploy/systemd/futurepred-backend.service`
+- `deploy/scripts/linux/prepare-linux.sh`
+- `deploy/scripts/linux/verify-linux-deploy.sh`
+
+跨域说明：
+
+- 当使用 `deploy/nginx/futurepred.conf` 时，前端与 `/api`、`/generated`、`/health` 走同一域名和端口，请求为同源，通常不会触发 CORS 问题。
+- 本地开发阶段使用 Vite 代理（`frontend/vite.config.ts`）也可避免浏览器跨域。
+
+Linux 服务器建议按以下入口执行：
+
+```bash
+chmod +x deploy/scripts/linux/prepare-linux.sh deploy/scripts/linux/verify-linux-deploy.sh
+sudo bash deploy/scripts/linux/prepare-linux.sh
+bash deploy/scripts/linux/verify-linux-deploy.sh
+```
+
 ## API
 
 - `GET /health` 健康检查
