@@ -121,7 +121,7 @@
   box-shadow: 0 8px 20px rgba(0, 186, 255, 0.2);
 }
 
-.bee-row {
+.drop-row {
   display: flex;
   justify-content: center;
   gap: 0.4rem;

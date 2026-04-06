@@ -1,5 +1,3 @@
-from typing import List, Optional
-
 from pydantic import BaseModel, Field
 
 
@@ -21,7 +19,7 @@ class PredictResponse(BaseModel):
 
 
 class ResetRequest(BaseModel):
-    seed: Optional[int] = None
+    seed: int | None = None
 
 
 class LoginRequest(BaseModel):
@@ -45,9 +43,9 @@ class HistoryItem(BaseModel):
 
 
 class HistoryListResponse(BaseModel):
-    items: List[HistoryItem]
+    items: list[HistoryItem]
     count: int
 
 
 class DeleteSelectedRequest(BaseModel):
-    prediction_ids: List[str] = Field(default_factory=list)
+    prediction_ids: list[str] = Field(default_factory=list)

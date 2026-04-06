@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from secrets import compare_digest
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -37,7 +37,7 @@ from .professions import HIGH_END_PROFESSIONS
 load_dotenv()
 
 
-def _read_int_env(name: str, default: int, *, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
+def _read_int_env(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
     raw = os.getenv(name, str(default)).strip()
     try:
         value = int(raw)
@@ -50,7 +50,7 @@ def _read_int_env(name: str, default: int, *, minimum: Optional[int] = None, max
     return value
 
 
-def _read_float_env(name: str, default: float, *, minimum: Optional[float] = None, maximum: Optional[float] = None) -> float:
+def _read_float_env(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
     raw = os.getenv(name, str(default)).strip()
     try:
         value = float(raw)
@@ -100,7 +100,7 @@ AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "ChangeMe123!")
 JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
-NAME_PATTERN = re.compile(r"^[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\-\.'·\s]{0,49}$")
+NAME_PATTERN = re.compile(r"^[A-Za-z\u4e00-\u9fff]+(?: [A-Za-z\u4e00-\u9fff]+)*$")
 PROVIDER_HTTP_TIMEOUT_SECONDS = _read_float_env("PROVIDER_HTTP_TIMEOUT_SECONDS", 90.0, minimum=5.0, maximum=300.0)
 PROVIDER_RETRY_ATTEMPTS = _read_int_env("PROVIDER_RETRY_ATTEMPTS", 2, minimum=0, maximum=5)
 PROVIDER_RETRY_BACKOFF_SECONDS = _read_float_env("PROVIDER_RETRY_BACKOFF_SECONDS", 1.2, minimum=0.1, maximum=10.0)
@@ -143,13 +143,13 @@ PROFESSION_EN_LABELS = {
 
 
 class RoleAllocator:
-    def __init__(self, professions: List[str], state_file: Path) -> None:
+    def __init__(self, professions: list[str], state_file: Path) -> None:
         self._professions = professions
         self._state_file = state_file
         self._lock = threading.Lock()
-        self._queue: List[str] = []
-        self._assigned: List[str] = []
-        self._seed: Optional[int] = None
+        self._queue: list[str] = []
+        self._assigned: list[str] = []
+        self._seed: int | None = None
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_or_init()
 
@@ -178,7 +178,7 @@ class RoleAllocator:
             },
         )
 
-    def _reset_internal(self, seed: Optional[int]) -> None:
+    def _reset_internal(self, seed: int | None) -> None:
         self._seed = seed
         randomizer = random.Random(seed)
         shuffled = self._professions.copy()
@@ -187,7 +187,7 @@ class RoleAllocator:
         self._assigned = []
         self._persist()
 
-    def next_role(self, participant_name: str) -> Tuple[str, int, int]:
+    def next_role(self, participant_name: str) -> tuple[str, int, int]:
         del participant_name
         with self._lock:
             if not self._queue:
@@ -206,7 +206,7 @@ class RoleAllocator:
                 self._queue.insert(0, profession)
                 self._persist()
 
-    def status(self) -> Dict[str, int]:
+    def status(self) -> dict[str, int]:
         with self._lock:
             return {
                 "assigned": len(self._assigned),
@@ -214,7 +214,7 @@ class RoleAllocator:
                 "total": len(self._professions),
             }
 
-    def reset(self, seed: Optional[int]) -> None:
+    def reset(self, seed: int | None) -> None:
         with self._lock:
             self._reset_internal(seed)
 
@@ -223,7 +223,7 @@ class PredictionHistoryStore:
     def __init__(self, history_file: Path) -> None:
         self._history_file = history_file
         self._lock = threading.Lock()
-        self._records: List[Dict[str, str]] = []
+        self._records: list[dict[str, str]] = []
         self._history_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_or_init()
 
@@ -242,25 +242,25 @@ class PredictionHistoryStore:
     def _persist(self) -> None:
         _atomic_write_json(self._history_file, self._records)
 
-    def list(self) -> List[Dict[str, str]]:
+    def list(self) -> list[dict[str, str]]:
         with self._lock:
             return list(self._records)
 
-    def add(self, record: Dict[str, str]) -> None:
+    def add(self, record: dict[str, str]) -> None:
         with self._lock:
             self._records.insert(0, record)
             if len(self._records) > HISTORY_MAX_RECORDS:
                 self._records = self._records[:HISTORY_MAX_RECORDS]
             self._persist()
 
-    def delete_selected(self, prediction_ids: Set[str]) -> List[Dict[str, str]]:
+    def delete_selected(self, prediction_ids: set[str]) -> list[dict[str, str]]:
         with self._lock:
             deleted = [record for record in self._records if record.get("prediction_id", "") in prediction_ids]
             self._records = [record for record in self._records if record.get("prediction_id", "") not in prediction_ids]
             self._persist()
             return deleted
 
-    def clear_all(self) -> List[Dict[str, str]]:
+    def clear_all(self) -> list[dict[str, str]]:
         with self._lock:
             deleted = list(self._records)
             self._records = []
@@ -299,11 +299,11 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> Dict[str, str]:
+def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _create_access_token(subject: str) -> Tuple[str, int]:
+def _create_access_token(subject: str) -> tuple[str, int]:
     expire_delta = timedelta(minutes=JWT_EXPIRE_MINUTES)
     expires_at = datetime.now(timezone.utc) + expire_delta
     payload = {
@@ -315,7 +315,7 @@ def _create_access_token(subject: str) -> Tuple[str, int]:
 
 
 def _require_auth(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(auth_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(auth_scheme),
 ) -> str:
     if not AUTH_ENABLED:
         return "anonymous"
@@ -350,7 +350,7 @@ def login(payload: LoginRequest) -> LoginResponse:
 
 
 @app.get("/api/status")
-def assignment_status(_: str = Depends(_require_auth)) -> Dict[str, int]:
+def assignment_status(_: str = Depends(_require_auth)) -> dict[str, int]:
     return allocator.status()
 
 
@@ -384,7 +384,7 @@ def _request_with_retry(
     url: str,
     **kwargs: Any,
 ) -> httpx.Response:
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
     for attempt in range(PROVIDER_RETRY_ATTEMPTS + 1):
         try:
             response = client.request(method, url, **kwargs)
@@ -430,7 +430,7 @@ def _download_image(client: httpx.Client, url: str, output_path: Path) -> None:
     output_path.write_bytes(content)
 
 
-def _parse_image_data_url(image_data: str) -> Tuple[str, bytes]:
+def _parse_image_data_url(image_data: str) -> tuple[str, bytes]:
     if not image_data.startswith("data:image"):
         raise ValueError("无效的图片 data URL")
 
@@ -497,8 +497,6 @@ def _generate_with_siliconflow_reference(
 
     reference_prompt = (
         "Preserve the same person identity and facial features from the input image. "
-        "Preserve original nationality and ethnicity cues from the reference photo; "
-        "do not change race, skin tone family, eye shape, facial structure, or hair texture. "
         f"Create a photorealistic portrait of the same person as a {profession_label}, "
         "age around 20 years old young adult, warm and friendly smile, refined and attractive appearance, "
         "clear natural skin texture, professional styling, formal outfit, soft cinematic studio lighting, "
@@ -551,7 +549,7 @@ def _generate_with_dashscope(client: httpx.Client, prompt: str, output_path: Pat
             "parameters": {"size": "768*768", "n": 1},
         },
     )
-    data: Dict[str, Any] = response.json()
+    data: dict[str, Any] = response.json()
     image_url = (((data.get("output") or {}).get("results") or [{}])[0]).get("url")
     if not image_url:
         raise ValueError("DashScope 未返回图片链接")
@@ -587,7 +585,7 @@ def _generate_with_zhipu(client: httpx.Client, prompt: str, output_path: Path) -
 def _generate_with_pollinations(client: httpx.Client, prompt: str, seed: str, output_path: Path) -> str:
     encoded_prompt = quote(prompt, safe="")
     model_candidates = [IMAGE_MODEL, "flux"]
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
 
     for model_name in dict.fromkeys(model_candidates):
         image_url = (
@@ -604,7 +602,7 @@ def _generate_with_pollinations(client: httpx.Client, prompt: str, seed: str, ou
 
 
 def _generate_future_image_with_client(client: httpx.Client, prompt: str, seed: str, output_path: Path) -> str:
-    failures: List[str] = []
+    failures: list[str] = []
 
     for provider in IMAGE_PROVIDER_ORDER:
         try:
@@ -635,7 +633,7 @@ def _generate_future_image_plan_b(
     output_path: Path,
     reference_image_data: str,
 ) -> str:
-    failures: List[str] = []
+    failures: list[str] = []
 
     with httpx.Client(timeout=PROVIDER_HTTP_TIMEOUT_SECONDS) as client:
         if PLAN_B_ENABLED:
@@ -659,7 +657,7 @@ def _generate_future_image_plan_b(
 
 
 @app.get("/api/providers/probe")
-def provider_probe(_: str = Depends(_require_auth)) -> Dict[str, Any]:
+def provider_probe(_: str = Depends(_require_auth)) -> dict[str, Any]:
     return {
         "order": IMAGE_PROVIDER_ORDER,
         "providers": {
@@ -752,7 +750,7 @@ def predict_future_profession(
     if not participant_name:
         raise HTTPException(status_code=400, detail="请输入姓名")
     if not NAME_PATTERN.fullmatch(participant_name):
-        raise HTTPException(status_code=400, detail="姓名仅支持中文、英文、空格、连字符和撇号")
+        raise HTTPException(status_code=400, detail="姓名仅支持中文、英文和空格")
 
     if not payload.image_data.startswith("data:image"):
         raise HTTPException(status_code=400, detail="请上传有效的照片数据")
@@ -771,13 +769,10 @@ def predict_future_profession(
 
         prediction_id = str(uuid.uuid4())
         seed_value = str(uuid.uuid4().int % 1_000_000_000)
-        profession_label = PROFESSION_EN_LABELS.get(profession, f"{profession} (high-end future profession)")
+        profession_label = PROFESSION_EN_LABELS.get(profession, profession)
         image_prompt = (
             "masterpiece, photorealistic portrait, future career professional, "
             f"{profession_label}, around 20 years old young adult, "
-            "keep the same person identity from reference photo, "
-            "preserve original nationality and ethnicity cues, "
-            "do not alter race, skin tone family, facial structure, eye shape, or hair texture, "
             "warm friendly smile, refined attractive appearance, clean natural skin, "
             "professional formal outfit, soft cinematic lighting, high detail, 85mm lens, "
             "clean background, uplifting and school-ceremony friendly"

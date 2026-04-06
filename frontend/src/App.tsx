@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import JSZip from 'jszip'
 import './App.css'
 
 type PredictResponse = {
@@ -39,6 +40,33 @@ type HistoryItemResponse = {
 type HistoryListResponse = {
   items: HistoryItemResponse[]
   count: number
+}
+
+const asString = (value: unknown) => (typeof value === 'string' ? value : '')
+
+const normalizeReviewItem = (value: unknown): ReviewItem | null => {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const raw = value as Record<string, unknown>
+  const predictionId = asString(raw.predictionId) || asString(raw.prediction_id)
+  const name = asString(raw.name) || asString(raw.participant_name)
+  const profession = asString(raw.profession)
+  const imageUrl = asString(raw.imageUrl) || asString(raw.generated_image_url)
+  const capturedImageUrl = asString(raw.capturedImageUrl) || asString(raw.captured_image_url)
+
+  if (!predictionId || !name || !profession || !imageUrl) {
+    return null
+  }
+
+  return {
+    predictionId,
+    name,
+    profession,
+    imageUrl,
+    capturedImageUrl: capturedImageUrl || undefined,
+  }
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
@@ -122,6 +150,8 @@ function App() {
   const [wallFocusMode, setWallFocusMode] = useState(false)
   const [wallAutoScroll, setWallAutoScroll] = useState(false)
   const [isExportingWall, setIsExportingWall] = useState(false)
+  const [isExportingAllImages, setIsExportingAllImages] = useState(false)
+  const [isExportingDualImages, setIsExportingDualImages] = useState(false)
   const [slideshowMode, setSlideshowMode] = useState(false)
   const [slideshowIndex, setSlideshowIndex] = useState(0)
   const [slideshowMusicOn, setSlideshowMusicOn] = useState(true)
@@ -131,8 +161,10 @@ function App() {
   const normalizedNameFilter = adminNameFilter.trim().toLowerCase()
   const normalizedProfessionFilter = adminProfessionFilter.trim().toLowerCase()
   const adminFilteredList = reviewList.filter((item) => {
-    const matchName = !normalizedNameFilter || item.name.toLowerCase().includes(normalizedNameFilter)
-    const matchProfession = !normalizedProfessionFilter || item.profession.toLowerCase().includes(normalizedProfessionFilter)
+    const safeName = asString(item.name).toLowerCase()
+    const safeProfession = asString(item.profession).toLowerCase()
+    const matchName = !normalizedNameFilter || safeName.includes(normalizedNameFilter)
+    const matchProfession = !normalizedProfessionFilter || safeProfession.includes(normalizedProfessionFilter)
     return matchName && matchProfession
   })
   const selectedIdSet = new Set(selectedPredictionIds)
@@ -160,9 +192,12 @@ function App() {
       if (!cache) {
         return
       }
-      const parsed = JSON.parse(cache) as ReviewItem[]
+      const parsed = JSON.parse(cache) as unknown
       if (Array.isArray(parsed)) {
-        setReviewList(parsed)
+        const normalized = parsed
+          .map((item) => normalizeReviewItem(item))
+          .filter((item): item is ReviewItem => item !== null)
+        setReviewList(normalized)
       }
     } catch {
       setReviewList([])
@@ -661,7 +696,12 @@ function App() {
       setLoginPassword('')
       setStatus('登录成功，请开启摄像头。')
     } catch (authError) {
-      setLoginError(authError instanceof Error ? authError.message : '登录失败，请重试。')
+      if (authError instanceof TypeError && authError.message.includes('Failed to fetch')) {
+        const resolvedApi = API_BASE || window.location.origin
+        setLoginError(`登录请求失败：无法连接到 ${resolvedApi}，请确认后端已启动，或本地开发代理已生效。`)
+      } else {
+        setLoginError(authError instanceof Error ? authError.message : '登录失败，请重试。')
+      }
     } finally {
       setIsLoggingIn(false)
     }
@@ -782,15 +822,73 @@ function App() {
 
     setIsExportingWall(true)
     setError('')
+    setStatus('正在导出纪念墙，请稍候...')
+    const objectUrls: string[] = []
     try {
-      const loadImage = (src: string) =>
+      const normalizeImageUrl = (src: string) => {
+        try {
+          const parsed = new URL(src, window.location.origin)
+          if (parsed.pathname.startsWith('/generated/')) {
+            return `${window.location.origin}${parsed.pathname}${parsed.search}`
+          }
+          return parsed.toString()
+        } catch {
+          return src
+        }
+      }
+
+      const loadImageFromUrl = (url: string) =>
         new Promise<HTMLImageElement>((resolve, reject) => {
           const image = new Image()
           image.crossOrigin = 'anonymous'
           image.onload = () => resolve(image)
           image.onerror = () => reject(new Error('图片加载失败'))
-          image.src = src
+          image.src = url
         })
+
+      const loadImage = async (src: string) => {
+        const normalizedSrc = normalizeImageUrl(src)
+        if (src.startsWith('data:')) {
+          return loadImageFromUrl(src)
+        }
+
+        try {
+          const response = await fetch(normalizedSrc)
+          if (!response.ok) {
+            throw new Error('图片请求失败')
+          }
+          const blob = await response.blob()
+          const objectUrl = URL.createObjectURL(blob)
+          objectUrls.push(objectUrl)
+          return await loadImageFromUrl(objectUrl)
+        } catch {
+          return loadImageFromUrl(normalizedSrc)
+        }
+      }
+
+      const drawImageOrPlaceholder = async (
+        src: string,
+        draw: (img: HTMLImageElement) => void,
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ) => {
+        try {
+          const image = await loadImage(src)
+          draw(image)
+          return true
+        } catch {
+          context!.fillStyle = '#13284d'
+          context!.fillRect(x, y, w, h)
+          context!.fillStyle = '#9ddffc'
+          context!.font = '14px Segoe UI, sans-serif'
+          context!.textAlign = 'center'
+          context!.fillText('图片加载失败', x + w / 2, y + h / 2)
+          context!.textAlign = 'left'
+          return false
+        }
+      }
 
       const columns = reviewList.length > 20 ? 5 : 4
       const cardWidth = 280
@@ -819,6 +917,7 @@ function App() {
       context.fillStyle = '#90d9f8'
       context.fillText(`已采集 ${reviewList.length} 位 · 导出时间 ${new Date().toLocaleString()}`, padding, 86)
 
+      let failedImageCount = 0
       for (let index = 0; index < reviewList.length; index += 1) {
         const item = reviewList[index]
         const row = Math.floor(index / columns)
@@ -836,10 +935,24 @@ function App() {
           // Draw "现在" + "未来" side by side
           const halfW = Math.floor((cardWidth - 16 - 6) / 2)
           const imgH = halfW
-          const nowImg = await loadImage(item.capturedImageUrl)
-          const futureImg = await loadImage(item.imageUrl)
-          context.drawImage(nowImg, x + 8, y + 8, halfW, imgH)
-          context.drawImage(futureImg, x + 8 + halfW + 6, y + 8, halfW, imgH)
+          const nowOk = await drawImageOrPlaceholder(
+            item.capturedImageUrl,
+            (img) => context.drawImage(img, x + 8, y + 8, halfW, imgH),
+            x + 8,
+            y + 8,
+            halfW,
+            imgH,
+          )
+          const futureOk = await drawImageOrPlaceholder(
+            item.imageUrl,
+            (img) => context.drawImage(img, x + 8 + halfW + 6, y + 8, halfW, imgH),
+            x + 8 + halfW + 6,
+            y + 8,
+            halfW,
+            imgH,
+          )
+          if (!nowOk) failedImageCount += 1
+          if (!futureOk) failedImageCount += 1
           // Labels
           context.fillStyle = 'rgba(0,0,0,0.5)'
           context.fillRect(x + 8, y + 8 + imgH - 20, halfW, 20)
@@ -858,8 +971,15 @@ function App() {
           context.font = '18px Segoe UI, sans-serif'
           context.fillText(item.profession, x + 12, y + imgH + 52)
         } else {
-          const image = await loadImage(item.imageUrl)
-          context.drawImage(image, x + 8, y + 8, cardWidth - 16, cardWidth - 16)
+          const singleOk = await drawImageOrPlaceholder(
+            item.imageUrl,
+            (img) => context.drawImage(img, x + 8, y + 8, cardWidth - 16, cardWidth - 16),
+            x + 8,
+            y + 8,
+            cardWidth - 16,
+            cardWidth - 16,
+          )
+          if (!singleOk) failedImageCount += 1
 
           context.fillStyle = '#f2fdff'
           context.font = 'bold 22px Segoe UI, sans-serif'
@@ -870,15 +990,275 @@ function App() {
         }
       }
 
+      const outputBlob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((blob) => resolve(blob), 'image/png')
+      })
+      if (!outputBlob) {
+        throw new Error('导出失败，请重试。')
+      }
+
+      const outputUrl = URL.createObjectURL(outputBlob)
       const link = document.createElement('a')
-      link.href = canvas.toDataURL('image/png')
+      link.href = outputUrl
       link.download = `future-wall-${new Date().toISOString().slice(0, 10)}.png`
+      document.body.appendChild(link)
       link.click()
-      setStatus('纪念墙已导出到本地。')
+      link.remove()
+      URL.revokeObjectURL(outputUrl)
+
+      if (failedImageCount > 0) {
+        setStatus(`纪念墙已导出（${failedImageCount} 张图片加载失败，已用占位图替代）。`)
+      } else {
+        setStatus('纪念墙已导出到本地。')
+      }
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : '导出失败，请重试。')
     } finally {
+      objectUrls.forEach((url) => URL.revokeObjectURL(url))
       setIsExportingWall(false)
+    }
+  }
+
+  const exportAllImagesToZip = async () => {
+    if (reviewList.length === 0) {
+      setError('当前没有可导出的照片。')
+      return
+    }
+
+    setIsExportingAllImages(true)
+    setError('')
+    setStatus('正在打包所有照片，请稍候...')
+    try {
+      const zip = new JSZip()
+
+      const sanitizeFileName = (input: string) => {
+        const cleaned = input
+          .replace(/[\\/:*?"<>|]/g, '_')
+          .replace(/\s+/g, ' ')
+          .trim()
+        return cleaned || '未命名'
+      }
+
+      const normalizeImageUrl = (src: string) => {
+        try {
+          const parsed = new URL(src, window.location.origin)
+          if (parsed.pathname.startsWith('/generated/')) {
+            return `${window.location.origin}${parsed.pathname}${parsed.search}`
+          }
+          return parsed.toString()
+        } catch {
+          return src
+        }
+      }
+
+      const inferExtension = (blobType: string, src: string) => {
+        if (blobType.includes('png')) return 'png'
+        if (blobType.includes('webp')) return 'webp'
+        if (blobType.includes('gif')) return 'gif'
+        if (blobType.includes('jpeg') || blobType.includes('jpg')) return 'jpg'
+
+        try {
+          const pathname = new URL(src, window.location.origin).pathname.toLowerCase()
+          if (pathname.endsWith('.png')) return 'png'
+          if (pathname.endsWith('.webp')) return 'webp'
+          if (pathname.endsWith('.gif')) return 'gif'
+          if (pathname.endsWith('.jpeg') || pathname.endsWith('.jpg')) return 'jpg'
+        } catch {
+          // Ignore parsing error and use fallback extension.
+        }
+
+        return 'jpg'
+      }
+
+      let exportedCount = 0
+      let failedCount = 0
+
+      for (let index = 0; index < reviewList.length; index += 1) {
+        const item = reviewList[index]
+        const src = normalizeImageUrl(item.imageUrl)
+        const rank = String(index + 1).padStart(2, '0')
+        const safeName = sanitizeFileName(item.name)
+        const safeProfession = sanitizeFileName(item.profession)
+
+        try {
+          const response = await fetch(src)
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`)
+          }
+
+          const blob = await response.blob()
+          const extension = inferExtension(blob.type, src)
+          const filename = `${rank}-${safeName}-${safeProfession}.${extension}`
+          zip.file(filename, blob)
+          exportedCount += 1
+        } catch (imageError) {
+          failedCount += 1
+          zip.file(
+            `失败记录/${rank}-${safeName}.txt`,
+            `姓名: ${item.name}\n职业: ${item.profession}\n图片地址: ${src}\n错误: ${imageError instanceof Error ? imageError.message : '未知错误'}`,
+          )
+        }
+      }
+
+      if (exportedCount === 0) {
+        throw new Error('没有成功下载任何图片，请确认回顾墙图片可访问。')
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' })
+      const zipUrl = URL.createObjectURL(zipBlob)
+      const link = document.createElement('a')
+      link.href = zipUrl
+      link.download = `future-images-${new Date().toISOString().slice(0, 10)}.zip`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(zipUrl)
+
+      if (failedCount > 0) {
+        setStatus(`批量导出完成：成功 ${exportedCount} 张，失败 ${failedCount} 张（ZIP 内含失败记录）。`)
+      } else {
+        setStatus(`批量导出完成：共 ${exportedCount} 张。`)
+      }
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : '批量导出失败，请重试。')
+    } finally {
+      setIsExportingAllImages(false)
+    }
+  }
+
+  const exportNowFuturePairsToZip = async () => {
+    if (reviewList.length === 0) {
+      setError('当前没有可导出的照片。')
+      return
+    }
+
+    setIsExportingDualImages(true)
+    setError('')
+    setStatus('正在打包“现在+未来”双图，请稍候...')
+    try {
+      const zip = new JSZip()
+
+      const sanitizeFileName = (input: string) => {
+        const cleaned = input
+          .replace(/[\\/:*?"<>|]/g, '_')
+          .replace(/\s+/g, ' ')
+          .trim()
+        return cleaned || '未命名'
+      }
+
+      const normalizeImageUrl = (src: string) => {
+        try {
+          const parsed = new URL(src, window.location.origin)
+          if (parsed.pathname.startsWith('/generated/')) {
+            return `${window.location.origin}${parsed.pathname}${parsed.search}`
+          }
+          return parsed.toString()
+        } catch {
+          return src
+        }
+      }
+
+      const inferExtension = (blobType: string, src: string) => {
+        if (blobType.includes('png')) return 'png'
+        if (blobType.includes('webp')) return 'webp'
+        if (blobType.includes('gif')) return 'gif'
+        if (blobType.includes('jpeg') || blobType.includes('jpg')) return 'jpg'
+
+        try {
+          const pathname = new URL(src, window.location.origin).pathname.toLowerCase()
+          if (pathname.endsWith('.png')) return 'png'
+          if (pathname.endsWith('.webp')) return 'webp'
+          if (pathname.endsWith('.gif')) return 'gif'
+          if (pathname.endsWith('.jpeg') || pathname.endsWith('.jpg')) return 'jpg'
+        } catch {
+          // Ignore parsing error and use fallback extension.
+        }
+
+        return 'jpg'
+      }
+
+      const addImage = async (label: '现在' | '未来', src: string, baseName: string) => {
+        const normalizedSrc = normalizeImageUrl(src)
+        const response = await fetch(normalizedSrc)
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+        const blob = await response.blob()
+        const extension = inferExtension(blob.type, normalizedSrc)
+        zip.file(`${baseName}-${label}.${extension}`, blob)
+      }
+
+      let successPairs = 0
+      let missingNowCount = 0
+      let failedImageCount = 0
+
+      for (let index = 0; index < reviewList.length; index += 1) {
+        const item = reviewList[index]
+        const rank = String(index + 1).padStart(2, '0')
+        const safeName = sanitizeFileName(item.name)
+        const safeProfession = sanitizeFileName(item.profession)
+        const baseName = `${rank}-${safeName}-${safeProfession}`
+
+        let pairOk = true
+
+        if (item.capturedImageUrl) {
+          try {
+            await addImage('现在', item.capturedImageUrl, baseName)
+          } catch (error) {
+            pairOk = false
+            failedImageCount += 1
+            zip.file(
+              `失败记录/${baseName}-现在.txt`,
+              `姓名: ${item.name}\n职业: ${item.profession}\n标签: 现在\n图片地址: ${item.capturedImageUrl}\n错误: ${error instanceof Error ? error.message : '未知错误'}`,
+            )
+          }
+        } else {
+          pairOk = false
+          missingNowCount += 1
+          zip.file(
+            `失败记录/${baseName}-现在缺失.txt`,
+            `姓名: ${item.name}\n职业: ${item.profession}\n说明: 当前记录没有“现在”照片（老数据通常只包含“未来”图）。`,
+          )
+        }
+
+        try {
+          await addImage('未来', item.imageUrl, baseName)
+        } catch (error) {
+          pairOk = false
+          failedImageCount += 1
+          zip.file(
+            `失败记录/${baseName}-未来.txt`,
+            `姓名: ${item.name}\n职业: ${item.profession}\n标签: 未来\n图片地址: ${item.imageUrl}\n错误: ${error instanceof Error ? error.message : '未知错误'}`,
+          )
+        }
+
+        if (pairOk) {
+          successPairs += 1
+        }
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' })
+      const zipUrl = URL.createObjectURL(zipBlob)
+      const link = document.createElement('a')
+      link.href = zipUrl
+      link.download = `now-future-pairs-${new Date().toISOString().slice(0, 10)}.zip`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(zipUrl)
+
+      const totalPairs = reviewList.length
+      if (failedImageCount > 0 || missingNowCount > 0) {
+        setStatus(
+          `双图导出完成：完整 ${successPairs}/${totalPairs} 组，缺少现在图 ${missingNowCount} 组，图片下载失败 ${failedImageCount} 张（ZIP 内含失败记录）。`,
+        )
+      } else {
+        setStatus(`双图导出完成：共 ${totalPairs} 组（每人 2 张）。`)
+      }
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : '双图导出失败，请重试。')
+    } finally {
+      setIsExportingDualImages(false)
     }
   }
 
@@ -896,7 +1276,7 @@ function App() {
     return (
       <main className="container">
         <section className="login-panel">
-          <h1>408班十岁礼登录</h1>
+          <h1>杭州英特外国语学校（小学部）十岁礼登录</h1>
           <p>请输入活动账号后开始未来职业预测。</p>
           <input
             type="text"
@@ -1024,14 +1404,14 @@ function App() {
       ) : (
         <>
           <header className="hero-header">
-            <div className="hero-badge">英特外国语小学 408班</div>
-            <div className="bee-row" aria-hidden="true">
-              <span>🐝</span>
-              <span>🐝</span>
-              <span>🐝</span>
+            <div className="hero-badge">杭州英特外国语学校（小学部）</div>
+            <div className="drop-row" aria-hidden="true">
+              <span>💧</span>
+              <span>💧</span>
+              <span>💧</span>
             </div>
             <h1>艾小语时空隧道 · 未来职业预测</h1>
-            <p>🎉 十岁礼特别环节：408班大蜜蜂勇敢出发，一起预测闪闪发光的未来职业</p>
+            <p>🎉 十岁礼特别环节：杭州英特外国语学校（小学部）的小雨滴们勇敢出发，一起预测闪闪发光的未来职业</p>
           </header>
 
           <section className="workspace-panel">
@@ -1208,7 +1588,7 @@ function App() {
               <h2>未来职业回顾墙</h2>
               <span>已采集 {reviewList.length} 位</span>
             </div>
-            <p className="review-subtitle">英特外国语小学408班 · 大蜜蜂十岁礼纪念墙</p>
+            <p className="review-subtitle">杭州英特外国语学校（小学部） · 小雨滴十岁礼纪念墙</p>
             <div className="wall-tools">
               <button type="button" onClick={() => setWallFocusMode((prev) => !prev)}>
                 {wallFocusMode ? '退出大屏展示' : '最大化职业墙'}
@@ -1223,6 +1603,12 @@ function App() {
               <button type="button" onClick={exportWallToLocal} disabled={isExportingWall}>
                 {isExportingWall ? '导出中...' : '一键导出纪念图'}
               </button>
+              <button type="button" onClick={exportAllImagesToZip} disabled={isExportingAllImages}>
+                {isExportingAllImages ? '打包中...' : '导出全部单人图（ZIP）'}
+              </button>
+              <button type="button" onClick={exportNowFuturePairsToZip} disabled={isExportingDualImages}>
+                {isExportingDualImages ? '打包中...' : '导出现在+未来双图（ZIP）'}
+              </button>
               {wallFocusMode && reviewList.length > 0 && (
                 <button
                   type="button"
@@ -1234,7 +1620,7 @@ function App() {
             </div>
 
             {reviewList.length === 0 ? (
-              <p className="review-empty">完成预测后，照片会展示在这里，方便全班一起回顾。</p>
+              <p className="review-empty">完成预测后，照片会展示在这里，方便全年级一起回顾。</p>
             ) : (
               <div
                 ref={wallScrollRef}
