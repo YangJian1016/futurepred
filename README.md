@@ -5,11 +5,12 @@
 ## 功能
 
 - 前端调用摄像头拍照
-- 后端从 28 个高端职业中随机且不重复分配
+- 班级与姓名必填，点击预测前先进行性别识别并弹窗确认
+- 后端按性别使用对应职业池随机且不重复分配（大部分职业男女通用，含少量扩展职业）
 - 调用第三方模型实时生成未来职业形象图（支持多通道容灾）
 - 支持登录鉴权，未登录无法调用预测接口
 - 返回“正在预测未来职业”流程文案与真实生图结果
-- 28 人分配完会阻止继续分配，避免重复
+- 采集页仅展示分页预览，完整职业墙放在独立页面，避免页面变慢
 - 第三方生图失败时自动回滚职业名额
 
 ## 国内通道实测排名（当前环境）
@@ -189,8 +190,9 @@ bash deploy/scripts/linux/verify-linux-deploy.sh
 ## API
 
 - `GET /health` 健康检查
-- `GET /api/status` 查看剩余职业数量
+- `GET /api/status` 查看男女职业池剩余数量
 - `GET /api/providers/probe` 查看多通道配置状态
+- `POST /api/face/attributes` 调用阿里云人脸属性识别
 - `POST /api/predict` 分配并返回未来职业
 - `POST /api/admin/reset` 重置职业池
 
@@ -201,16 +203,33 @@ bash deploy/scripts/linux/verify-linux-deploy.sh
 - `IMAGE_PROVIDER_ORDER`：容灾顺序，默认 `siliconflow,dashscope,pollinations`
 - `PLAN_B_ENABLED`：是否启用“参考图保留身份”路径（默认 `true`）
 - `PLAN_B_REFERENCE_MODEL`：参考图编辑模型（默认 `Qwen/Qwen-Image-Edit-2509`）
+- `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`：阿里云人脸属性识别 AccessKey
+- `ALIYUN_FACEBODY_ENDPOINT`：默认 `facebody.cn-shanghai.aliyuncs.com`
 - `SILICONFLOW_API_KEY` / `SILICONFLOW_MODEL`
 - `DASHSCOPE_API_KEY` / `DASHSCOPE_MODEL`
 - `ZHIPU_API_KEY` / `ZHIPU_MODEL`（可选扩展）
 - `POLLINATIONS_BASE_URL` / `IMAGE_MODEL`（兜底）
 
+说明：`POST /api/predict` 已经改为直接复用阿里云人脸属性识别结果里的性别信息，不再使用本地 `opencv/onnx/insightface` 检测链路。
+
+说明：前端推荐流程是先调用 `POST /api/face/attributes` 拿到性别并弹窗确认，再调用 `POST /api/predict` 时带上 `confirmed_gender`，这样后端不会重复调用阿里云识别性别。
+
 `POST /api/predict` 请求示例：
 
 ```json
 {
+  "participant_class": "四年级(1)班",
   "participant_name": "小明",
+  "confirmed_gender": "male",
   "image_data": "data:image/jpeg;base64,..."
+}
+```
+
+`POST /api/face/attributes` 请求示例：
+
+```json
+{
+  "image_data": "data:image/jpeg;base64,...",
+  "max_face_number": 3
 }
 ```
