@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import random
+import shutil
 import threading
 import time
 import uuid
 import base64
 import re
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from secrets import compare_digest
@@ -17,6 +19,11 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 import httpx
 import jwt
+from Tea.exceptions import TeaException
+from alibabacloud_facebody20191230.client import Client as FacebodyClient
+from alibabacloud_facebody20191230 import models as facebody_models
+from alibabacloud_tea_openapi import models as open_api_models
+from alibabacloud_tea_util import models as util_models
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,6 +31,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .models import (
     DeleteSelectedRequest,
+    FaceAttributesRequest,
+    FaceAttributesResponse,
     HistoryItem,
     HistoryListResponse,
     LoginRequest,
@@ -33,6 +42,10 @@ from .models import (
     ResetRequest,
 )
 from .professions import HIGH_END_PROFESSIONS
+from .professions import get_professions_missing_english_labels
+from .professions import get_profession_prompt_profile
+from .professions import get_professions_for_gender
+from .professions import get_professions_using_default_scene
 
 load_dotenv()
 
@@ -94,6 +107,15 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_MODEL = os.getenv("DASHSCOPE_MODEL", "wanx2.1-t2i-turbo")
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 ZHIPU_MODEL = os.getenv("ZHIPU_MODEL", "cogview-3-flash")
+ALIYUN_FACEBODY_ENDPOINT = os.getenv("ALIYUN_FACEBODY_ENDPOINT", "facebody.cn-shanghai.aliyuncs.com").strip()
+ALIYUN_FACEBODY_ACCESS_KEY_ID = (
+    os.getenv("ALIYUN_FACEBODY_ACCESS_KEY_ID", "").strip()
+    or os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "").strip()
+)
+ALIYUN_FACEBODY_ACCESS_KEY_SECRET = (
+    os.getenv("ALIYUN_FACEBODY_ACCESS_KEY_SECRET", "").strip()
+    or os.getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "").strip()
+)
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "ChangeMe123!")
@@ -101,46 +123,22 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
 NAME_PATTERN = re.compile(r"^[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\-\.'·\s]{0,49}$")
+CLASS_PATTERN = re.compile(r"^[0-9]0[0-9]$")
 PROVIDER_HTTP_TIMEOUT_SECONDS = _read_float_env("PROVIDER_HTTP_TIMEOUT_SECONDS", 90.0, minimum=5.0, maximum=300.0)
 PROVIDER_RETRY_ATTEMPTS = _read_int_env("PROVIDER_RETRY_ATTEMPTS", 2, minimum=0, maximum=5)
 PROVIDER_RETRY_BACKOFF_SECONDS = _read_float_env("PROVIDER_RETRY_BACKOFF_SECONDS", 1.2, minimum=0.1, maximum=10.0)
 GENERATION_CONCURRENCY = _read_int_env("GENERATION_CONCURRENCY", 8, minimum=1, maximum=64)
-GENERATION_WAIT_TIMEOUT_SECONDS = _read_float_env("GENERATION_WAIT_TIMEOUT_SECONDS", 25.0, minimum=1.0, maximum=120.0)
+GENERATION_WAIT_TIMEOUT_SECONDS = _read_float_env("GENERATION_WAIT_TIMEOUT_SECONDS", 20.0, minimum=1.0, maximum=120.0)
 MAX_IMAGE_BYTES = _read_int_env("MAX_IMAGE_BYTES", 8 * 1024 * 1024, minimum=256 * 1024, maximum=20 * 1024 * 1024)
 HISTORY_MAX_RECORDS = _read_int_env("HISTORY_MAX_RECORDS", 5000, minimum=200, maximum=50000)
+FACE_QUALITY_RETRY_ATTEMPTS = _read_int_env("FACE_QUALITY_RETRY_ATTEMPTS", 2, minimum=0, maximum=4)
+FACE_QUALITY_MIN_SCORE = _read_float_env("FACE_QUALITY_MIN_SCORE", 45.0, minimum=0.0, maximum=100.0)
+FACE_QUALITY_MAX_BLUR = _read_float_env("FACE_QUALITY_MAX_BLUR", 0.92, minimum=0.0, maximum=1.0)
+FACE_QUALITY_MIN_BLUR_SCORE = _read_float_env("FACE_QUALITY_MIN_BLUR_SCORE", 85.0, minimum=0.0, maximum=100.0)
+FACE_BEST_PICK_ENABLED = _read_bool_env("FACE_BEST_PICK_ENABLED", True)
+FACE_BEST_PICK_SCORE_WEIGHT = _read_float_env("FACE_BEST_PICK_SCORE_WEIGHT", 0.6, minimum=0.0, maximum=1.0)
+FACE_BEST_PICK_BLUR_WEIGHT = _read_float_env("FACE_BEST_PICK_BLUR_WEIGHT", 0.4, minimum=0.0, maximum=1.0)
 generation_slots = threading.BoundedSemaphore(value=GENERATION_CONCURRENCY)
-
-PROFESSION_EN_LABELS = {
-    "AI算法科学家": "AI research scientist",
-    "芯片架构师": "chip architect",
-    "航天工程师": "aerospace engineer",
-    "民航机长": "airline captain",
-    "心外科医生": "cardiac surgeon",
-    "神经外科医生": "neurosurgeon",
-    "生物医药研究员": "biomedical researcher",
-    "基因工程科学家": "genetic engineering scientist",
-    "量化分析师": "quantitative analyst",
-    "投资银行家": "investment banker",
-    "网络安全专家": "information security engineer",
-    "区块链架构师": "blockchain architect",
-    "云计算架构师": "cloud architect",
-    "机器人研发总监": "robotics R&D director",
-    "自动驾驶系统工程师": "autonomous driving engineer",
-    "新能源首席工程师": "chief renewable energy engineer",
-    "核聚变研究员": "nuclear fusion researcher",
-    "材料科学家": "materials scientist",
-    "大学教授": "university professor",
-    "外交官": "diplomat",
-    "法官": "judge",
-    "国际律师": "international lawyer",
-    "建筑设计师": "architect",
-    "工业设计总监": "industrial design director",
-    "科技企业创始人": "technology startup founder",
-    "产品战略总监": "product strategy director",
-    "数据科学总监": "director of data science",
-    "人工智能伦理专家": "AI ethics specialist",
-}
-
 
 class RoleAllocator:
     def __init__(self, professions: List[str], state_file: Path) -> None:
@@ -268,7 +266,20 @@ class PredictionHistoryStore:
             return deleted
 
 
-allocator = RoleAllocator(HIGH_END_PROFESSIONS, STATE_FILE)
+allocator_female = RoleAllocator(get_professions_for_gender("female"), DATA_DIR / "assignment_state_female.json")
+allocator_male = RoleAllocator(get_professions_for_gender("male"), DATA_DIR / "assignment_state_male.json")
+allocator_default = RoleAllocator(HIGH_END_PROFESSIONS, STATE_FILE)
+
+
+def _get_allocator_for_gender(gender: str) -> RoleAllocator:
+    normalized = (gender or "").strip().lower()
+    if normalized == "female":
+        return allocator_female
+    if normalized == "male":
+        return allocator_male
+    return allocator_default
+
+
 history_store = PredictionHistoryStore(HISTORY_FILE)
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -296,6 +307,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def log_profession_prompt_audit() -> None:
+    missing_english = get_professions_missing_english_labels()
+    default_scene = get_professions_using_default_scene()
+    print(
+        "Profession prompt audit:",
+        json.dumps(
+            {
+                "missing_english_count": len(missing_english),
+                "missing_english": missing_english,
+                "default_scene_count": len(default_scene),
+                "default_scene": default_scene,
+            },
+            ensure_ascii=False,
+        ),
+    )
 
 
 @app.get("/health")
@@ -351,7 +380,16 @@ def login(payload: LoginRequest) -> LoginResponse:
 
 @app.get("/api/status")
 def assignment_status(_: str = Depends(_require_auth)) -> Dict[str, int]:
-    return allocator.status()
+    female_status = allocator_female.status()
+    male_status = allocator_male.status()
+    return {
+        "female_assigned": female_status["assigned"],
+        "female_remaining": female_status["remaining"],
+        "female_total": female_status["total"],
+        "male_assigned": male_status["assigned"],
+        "male_remaining": male_status["remaining"],
+        "male_total": male_status["total"],
+    }
 
 
 def _build_public_image_url(request: Request, filename: str) -> str:
@@ -430,6 +468,131 @@ def _download_image(client: httpx.Client, url: str, output_path: Path) -> None:
     output_path.write_bytes(content)
 
 
+def _create_aliyun_facebody_client() -> FacebodyClient:
+    if not ALIYUN_FACEBODY_ACCESS_KEY_ID or not ALIYUN_FACEBODY_ACCESS_KEY_SECRET:
+        raise HTTPException(
+            status_code=503,
+            detail="未配置阿里云人脸属性识别 AccessKey，请在 backend/.env 中设置 ALIBABA_CLOUD_ACCESS_KEY_ID 和 ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+        )
+
+    config = open_api_models.Config()
+    config.access_key_id = ALIYUN_FACEBODY_ACCESS_KEY_ID
+    config.access_key_secret = ALIYUN_FACEBODY_ACCESS_KEY_SECRET
+    config.endpoint = ALIYUN_FACEBODY_ENDPOINT
+    return FacebodyClient(config)
+
+
+def _lookup_key(mapping: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
+def _build_face_rectangles(flat_rectangles: Optional[List[int]], face_count: int) -> List[List[int]]:
+    rectangles = flat_rectangles or []
+    grouped: List[List[int]] = []
+    for index in range(face_count):
+        start = index * 4
+        chunk = rectangles[start : start + 4]
+        grouped.append(chunk if len(chunk) == 4 else [])
+    return grouped
+
+
+def _build_face_pose(flat_pose_values: Optional[List[float]], face_count: int) -> List[List[float]]:
+    poses = flat_pose_values or []
+    grouped: List[List[float]] = []
+    for index in range(face_count):
+        start = index * 3
+        chunk = poses[start : start + 3]
+        grouped.append(chunk if len(chunk) == 3 else [])
+    return grouped
+
+
+def _map_gender(value: Optional[int]) -> Dict[str, Any]:
+    mapping = {
+        0: "female",
+        1: "male",
+    }
+    return {"code": value, "label": mapping.get(value, "unknown")}
+
+
+def _map_expression(value: Optional[int]) -> Dict[str, Any]:
+    mapping = {
+        0: "neutral",
+        1: "smile",
+    }
+    return {"code": value, "label": mapping.get(value, "unknown")}
+
+
+def _map_glasses(value: Optional[int]) -> Dict[str, Any]:
+    mapping = {
+        0: "none",
+        1: "regular_glasses",
+        2: "sunglasses",
+    }
+    return {"code": value, "label": mapping.get(value, "unknown")}
+
+
+def _map_hat(value: Optional[int]) -> Dict[str, Any]:
+    mapping = {
+        0: "no_hat",
+        1: "hat",
+    }
+    return {"code": value, "label": mapping.get(value, "unknown")}
+
+
+def _map_mask(value: Optional[int]) -> Dict[str, Any]:
+    mapping = {
+        0: "no_mask",
+        1: "mask",
+        2: "mask_incorrect",
+    }
+    return {"code": value, "label": mapping.get(value, "unknown")}
+
+
+def _normalize_facebody_response(raw_response: Dict[str, Any]) -> Dict[str, Any]:
+    body = _lookup_key(raw_response, "body", "Body") or {}
+    data = _lookup_key(body, "data", "Data") or {}
+    face_count = int(_lookup_key(data, "faceCount", "FaceCount") or 0)
+    face_rectangles = _build_face_rectangles(_lookup_key(data, "faceRectangles", "FaceRectangles"), face_count)
+    pose_groups = _build_face_pose(_lookup_key(data, "poseList", "PoseList"), face_count)
+    qualities = _lookup_key(data, "qualities", "Qualities") or {}
+    faces: List[Dict[str, Any]] = []
+
+    for index in range(face_count):
+        face: Dict[str, Any] = {
+            "index": index,
+            "age": ((_lookup_key(data, "ageList", "AgeList") or [None] * face_count)[index] if index < len(_lookup_key(data, "ageList", "AgeList") or []) else None),
+            "gender": _map_gender((_lookup_key(data, "genderList", "GenderList") or [None] * face_count)[index] if index < len(_lookup_key(data, "genderList", "GenderList") or []) else None),
+            "expression": _map_expression((_lookup_key(data, "expressions", "Expressions") or [None] * face_count)[index] if index < len(_lookup_key(data, "expressions", "Expressions") or []) else None),
+            "glasses": _map_glasses((_lookup_key(data, "glasses", "Glasses") or [None] * face_count)[index] if index < len(_lookup_key(data, "glasses", "Glasses") or []) else None),
+            "hat": _map_hat((_lookup_key(data, "hatList", "HatList") or [None] * face_count)[index] if index < len(_lookup_key(data, "hatList", "HatList") or []) else None),
+            "mask": _map_mask((_lookup_key(data, "masks", "Masks") or [None] * face_count)[index] if index < len(_lookup_key(data, "masks", "Masks") or []) else None),
+            "beauty": ((_lookup_key(data, "beautyList", "BeautyList") or [None] * face_count)[index] if index < len(_lookup_key(data, "beautyList", "BeautyList") or []) else None),
+            "face_probability": ((_lookup_key(data, "faceProbabilityList", "FaceProbabilityList") or [None] * face_count)[index] if index < len(_lookup_key(data, "faceProbabilityList", "FaceProbabilityList") or []) else None),
+            "rectangle": face_rectangles[index] if index < len(face_rectangles) else [],
+            "pose": pose_groups[index] if index < len(pose_groups) else [],
+            "quality": {
+                "score": ((_lookup_key(qualities, "scoreList", "ScoreList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "scoreList", "ScoreList") or []) else None),
+                "blur": ((_lookup_key(qualities, "blurList", "BlurList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "blurList", "BlurList") or []) else None),
+                "fnf": ((_lookup_key(qualities, "fnfList", "FnfList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "fnfList", "FnfList") or []) else None),
+                "glass": ((_lookup_key(qualities, "glassList", "GlassList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "glassList", "GlassList") or []) else None),
+                "illumination": ((_lookup_key(qualities, "illuList", "IlluList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "illuList", "IlluList") or []) else None),
+                "mask": ((_lookup_key(qualities, "maskList", "MaskList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "maskList", "MaskList") or []) else None),
+                "noise": ((_lookup_key(qualities, "noiseList", "NoiseList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "noiseList", "NoiseList") or []) else None),
+                "pose": ((_lookup_key(qualities, "poseList", "PoseList") or [None] * face_count)[index] if index < len(_lookup_key(qualities, "poseList", "PoseList") or []) else None),
+            },
+        }
+        faces.append(face)
+
+    return {
+        "request_id": _lookup_key(body, "requestId", "RequestId") or "",
+        "face_count": face_count,
+        "faces": faces,
+        "raw": raw_response,
+    }
+
 def _parse_image_data_url(image_data: str) -> Tuple[str, bytes]:
     if not image_data.startswith("data:image"):
         raise ValueError("无效的图片 data URL")
@@ -452,6 +615,211 @@ def _parse_image_data_url(image_data: str) -> Tuple[str, bytes]:
         raise ValueError(f"图片过大，请压缩到 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 以内")
 
     return mime_type, binary
+
+
+def _extension_from_mime_type(mime_type: str) -> str:
+    normalized = (mime_type or "").strip().lower()
+    if normalized == "image/png":
+        return "png"
+    if normalized == "image/webp":
+        return "webp"
+    if normalized == "image/gif":
+        return "gif"
+    return "jpg"
+
+
+def _save_captured_image(image_data: str, prediction_id: str) -> str:
+    mime_type, binary = _parse_image_data_url(image_data)
+    extension = _extension_from_mime_type(mime_type)
+    filename = f"{prediction_id}-captured.{extension}"
+    (GENERATED_DIR / filename).write_bytes(binary)
+    return filename
+
+
+def _recognize_face_attributes(image_data: str, max_face_number: int) -> Dict[str, Any]:
+    _, binary = _parse_image_data_url(image_data)
+    client = _create_aliyun_facebody_client()
+    request_model = facebody_models.RecognizeFaceAdvanceRequest(
+        image_urlobject=BytesIO(binary),
+        age=True,
+        gender=True,
+        hat=True,
+        glass=True,
+        beauty=True,
+        expression=True,
+        mask=True,
+        quality=True,
+        max_face_number=max_face_number,
+    )
+    runtime = util_models.RuntimeOptions()
+
+    try:
+        response = client.recognize_face_advance(request_model, runtime)
+    except TeaException as error:
+        code = getattr(error, "code", "AliyunFacebodyError")
+        message = getattr(error, "message", str(error))
+        raise HTTPException(status_code=502, detail=f"阿里云人脸属性识别调用失败: {code} - {message}") from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"阿里云人脸属性识别调用失败: {error}") from error
+
+    return _normalize_facebody_response(response.to_map())
+
+
+def _log_face_attributes(
+    *,
+    prediction_id: str,
+    participant_name: str,
+    gender: str,
+) -> None:
+    print(
+        "Aliyun detected gender:",
+        json.dumps(
+            {
+                "prediction_id": prediction_id,
+                "participant_name": participant_name,
+                "gender": gender,
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def _log_generation_event(event: str, **payload: Any) -> None:
+    print(
+        "Generation event:",
+        json.dumps(
+            {
+                "event": event,
+                **payload,
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def _detect_gender_from_face_attributes(face_attributes: Dict[str, Any]) -> str:
+    faces = face_attributes.get("faces") or []
+    if not faces:
+        return "unknown"
+
+    gender = ((faces[0].get("gender") or {}).get("label") or "unknown").strip().lower()
+    if gender in {"female", "male"}:
+        return gender
+    return "unknown"
+
+
+def _guess_mime_type(image_binary: bytes) -> str:
+    if image_binary.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_binary.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_binary.startswith(b"GIF87a") or image_binary.startswith(b"GIF89a"):
+        return "image/gif"
+    if image_binary.startswith(b"RIFF") and b"WEBP" in image_binary[:16]:
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _build_data_url_from_image_binary(image_binary: bytes) -> str:
+    mime_type = _guess_mime_type(image_binary)
+    encoded = base64.b64encode(image_binary).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _validate_generated_face_quality(output_path: Path, expected_gender: str = "unknown") -> Tuple[bool, str, float]:
+    if not (ALIYUN_FACEBODY_ACCESS_KEY_ID and ALIYUN_FACEBODY_ACCESS_KEY_SECRET):
+        _log_generation_event("quality-check-skipped", reason="no-facebody-config")
+        return True, "skip-no-facebody-config", 100.0
+
+    try:
+        image_binary = output_path.read_bytes()
+        image_data = _build_data_url_from_image_binary(image_binary)
+        attributes = _recognize_face_attributes(image_data, 1)
+    except Exception as error:
+        # Quality check should not block normal output when external service is transiently unavailable.
+        _log_generation_event("quality-check-skipped", reason="check-error", error=str(error))
+        return True, f"skip-check-error:{error}", 100.0
+
+    face_count = int(attributes.get("face_count") or 0)
+    if face_count <= 0:
+        _log_generation_event("quality-check-failed", reason="no-face-detected")
+        return False, "no-face-detected", 0.0
+
+    faces = attributes.get("faces") or []
+    if not faces:
+        _log_generation_event("quality-check-failed", reason="empty-face-result")
+        return False, "empty-face-result", 0.0
+
+    detected_gender = _detect_gender_from_face_attributes(attributes)
+    normalized_expected_gender = (expected_gender or "unknown").strip().lower()
+    if (
+        normalized_expected_gender in {"female", "male"}
+        and detected_gender in {"female", "male"}
+        and detected_gender != normalized_expected_gender
+    ):
+        _log_generation_event(
+            "quality-check-failed",
+            reason="gender-mismatch",
+            expected_gender=normalized_expected_gender,
+            detected_gender=detected_gender,
+        )
+        return False, f"gender-mismatch:expected-{normalized_expected_gender}-got-{detected_gender}", 0.0
+
+    first_face = faces[0] or {}
+    quality = first_face.get("quality") or {}
+    score = quality.get("score")
+    blur = quality.get("blur")
+    score_value = float(score) if isinstance(score, (int, float)) else 0.0
+    blur_score = 0.0
+
+    if isinstance(score, (int, float)) and score_value < FACE_QUALITY_MIN_SCORE:
+        _log_generation_event("quality-check-failed", reason="low-face-score", score=score)
+        total_weight = FACE_BEST_PICK_SCORE_WEIGHT + FACE_BEST_PICK_BLUR_WEIGHT
+        if total_weight <= 0:
+            total_weight = 1.0
+        candidate_score = (score_value * FACE_BEST_PICK_SCORE_WEIGHT + blur_score * FACE_BEST_PICK_BLUR_WEIGHT) / total_weight
+        return False, f"low-face-score:{score}", max(0.0, min(100.0, candidate_score))
+
+    # Official Aliyun RecognizeFace semantics: BlurList is a quality score.
+    # Higher is better (less blur), range (0, 100].
+    # Some SDK paths may normalize to 0..1, so we scale that back to 0..100.
+    if isinstance(blur, (int, float)):
+        blur_score = float(blur)
+        if 0.0 <= blur_score <= 1.0:
+            blur_score = blur_score * 100.0
+        if blur_score < FACE_QUALITY_MIN_BLUR_SCORE:
+            _log_generation_event("quality-check-failed", reason="low-face-blur-score", blur=blur, blur_score=blur_score)
+            total_weight = FACE_BEST_PICK_SCORE_WEIGHT + FACE_BEST_PICK_BLUR_WEIGHT
+            if total_weight <= 0:
+                total_weight = 1.0
+            candidate_score = (score_value * FACE_BEST_PICK_SCORE_WEIGHT + blur_score * FACE_BEST_PICK_BLUR_WEIGHT) / total_weight
+            return False, f"low-face-blur-score:{blur_score}", max(0.0, min(100.0, candidate_score))
+
+    total_weight = FACE_BEST_PICK_SCORE_WEIGHT + FACE_BEST_PICK_BLUR_WEIGHT
+    if total_weight <= 0:
+        total_weight = 1.0
+    candidate_score = (score_value * FACE_BEST_PICK_SCORE_WEIGHT + blur_score * FACE_BEST_PICK_BLUR_WEIGHT) / total_weight
+    candidate_score = max(0.0, min(100.0, candidate_score))
+
+    _log_generation_event(
+        "quality-check-passed",
+        expected_gender=normalized_expected_gender,
+        detected_gender=detected_gender,
+        score=score,
+        blur=blur,
+        candidate_score=candidate_score,
+    )
+    return True, "ok", candidate_score
+
+
+def _next_seed(seed: str, attempt_index: int) -> str:
+    if attempt_index <= 0:
+        return seed
+    try:
+        base_seed = int(seed)
+    except ValueError:
+        base_seed = uuid.uuid4().int % 1_000_000_000
+    return str((base_seed + 7919 * attempt_index) % 1_000_000_000)
 
 
 def _generate_with_siliconflow(client: httpx.Client, prompt: str, seed: str, output_path: Path) -> str:
@@ -491,18 +859,35 @@ def _generate_with_siliconflow_reference(
     reference_image_data: str,
     seed: str,
     output_path: Path,
+    gender: str = "unknown",
 ) -> str:
     if not SILICONFLOW_API_KEY:
         raise ValueError("SiliconFlow 未配置 API Key")
 
+    gender_clause = ""
+    if gender == "female":
+        gender_clause = "The person is female; generate a FEMALE young woman. Do NOT generate a male. "
+    elif gender == "male":
+        gender_clause = "The person is male; generate a MALE young man. Do NOT generate a female. "
+
+    profession_profile = get_profession_prompt_profile(profession_label)
+    profession_label_en = profession_profile["en"]
+    scene_prompt = profession_profile["scene"]
+    shot_template = profession_profile["shot"]
+
     reference_prompt = (
         "Preserve the same person identity and facial features from the input image. "
+        f"{gender_clause}"
         "Preserve original nationality and ethnicity cues from the reference photo; "
         "do not change race, skin tone family, eye shape, facial structure, or hair texture. "
-        f"Create a photorealistic portrait of the same person as a {profession_label}, "
+        f"Create a photorealistic portrait of the same person as a {profession_label_en} ({profession_label}), "
+        f"{scene_prompt}, {shot_template}, show profession-specific tools and workplace context, "
+        "front-facing portrait, full face visible, both eyes clearly visible, clear eyebrows, clear nose and lips, "
+        "no face occlusion, no transparent veil over face, no face reflection, no face overlay, no double exposure, "
+        "no distorted facial anatomy, no extra eyes, no extra mouth, no motion blur on face, "
         "age around 20 years old young adult, warm and friendly smile, refined and attractive appearance, "
         "clear natural skin texture, professional styling, formal outfit, soft cinematic studio lighting, "
-        "high detail, clean background, school-ceremony friendly"
+        "high detail, visually rich immersive background, avoid plain empty backdrop, school-ceremony friendly"
     )
 
     response = _request_with_retry(
@@ -634,27 +1019,90 @@ def _generate_future_image_plan_b(
     seed: str,
     output_path: Path,
     reference_image_data: str,
+    gender: str = "unknown",
 ) -> str:
     failures: List[str] = []
+    best_candidate_score = -1.0
+    best_candidate_provider = ""
+    best_candidate_reason = ""
+    best_candidate_path = output_path.with_suffix(f"{output_path.suffix}.best")
+    _log_generation_event("generation-start", plan_b=PLAN_B_ENABLED, expected_gender=gender)
 
     with httpx.Client(timeout=PROVIDER_HTTP_TIMEOUT_SECONDS) as client:
-        if PLAN_B_ENABLED:
+        for attempt in range(FACE_QUALITY_RETRY_ATTEMPTS + 1):
+            attempt_seed = _next_seed(seed, attempt)
+            _log_generation_event("generation-attempt", attempt=attempt + 1, seed=attempt_seed)
+
+            if PLAN_B_ENABLED:
+                try:
+                    provider = _generate_with_siliconflow_reference(
+                        client=client,
+                        profession_label=profession_label,
+                        reference_image_data=reference_image_data,
+                        seed=attempt_seed,
+                        output_path=output_path,
+                        gender=gender,
+                    )
+                    quality_ok, reason, candidate_score = _validate_generated_face_quality(output_path, expected_gender=gender)
+                    if quality_ok:
+                        _log_generation_event("generation-success", provider=provider, attempt=attempt + 1)
+                        return provider
+                    if FACE_BEST_PICK_ENABLED and candidate_score > best_candidate_score:
+                        shutil.copy2(output_path, best_candidate_path)
+                        best_candidate_score = candidate_score
+                        best_candidate_provider = provider
+                        best_candidate_reason = reason
+                        _log_generation_event(
+                            "generation-best-candidate-updated",
+                            attempt=attempt + 1,
+                            provider=provider,
+                            candidate_score=candidate_score,
+                            reason=reason,
+                        )
+                    failures.append(f"plan-b-face-quality(attempt {attempt + 1}): {reason}")
+                    continue
+                except (httpx.HTTPError, OSError, ValueError) as error:
+                    _log_generation_event("generation-provider-error", provider="plan-b", attempt=attempt + 1, error=str(error))
+                    failures.append(f"plan-b(attempt {attempt + 1}): {error}")
+
             try:
-                return _generate_with_siliconflow_reference(
-                    client=client,
-                    profession_label=profession_label,
-                    reference_image_data=reference_image_data,
-                    seed=seed,
-                    output_path=output_path,
-                )
-            except (httpx.HTTPError, OSError, ValueError) as error:
-                failures.append(f"plan-b: {error}")
+                provider = _generate_future_image_with_client(client, prompt, attempt_seed, output_path)
+                quality_ok, reason, candidate_score = _validate_generated_face_quality(output_path, expected_gender=gender)
+                if quality_ok:
+                    _log_generation_event("generation-success", provider=provider, attempt=attempt + 1)
+                    return provider
+                if FACE_BEST_PICK_ENABLED and candidate_score > best_candidate_score:
+                    shutil.copy2(output_path, best_candidate_path)
+                    best_candidate_score = candidate_score
+                    best_candidate_provider = provider
+                    best_candidate_reason = reason
+                    _log_generation_event(
+                        "generation-best-candidate-updated",
+                        attempt=attempt + 1,
+                        provider=provider,
+                        candidate_score=candidate_score,
+                        reason=reason,
+                    )
+                failures.append(f"fallback-face-quality(attempt {attempt + 1}): {reason}")
+            except ValueError as error:
+                _log_generation_event("generation-provider-error", provider="fallback", attempt=attempt + 1, error=str(error))
+                failures.append(f"fallback(attempt {attempt + 1}): {error}")
 
-        try:
-            return _generate_future_image_with_client(client, prompt, seed, output_path)
-        except ValueError as error:
-            failures.append(f"fallback: {error}")
+    if FACE_BEST_PICK_ENABLED and best_candidate_score > 0 and best_candidate_path.exists():
+        shutil.copy2(best_candidate_path, output_path)
+        _log_generation_event(
+            "generation-best-candidate-selected",
+            provider=best_candidate_provider,
+            candidate_score=best_candidate_score,
+            reason=best_candidate_reason,
+        )
+        best_candidate_path.unlink(missing_ok=True)
+        return best_candidate_provider or "best-candidate"
 
+    if best_candidate_path.exists():
+        best_candidate_path.unlink(missing_ok=True)
+
+    _log_generation_event("generation-failed", failures="; ".join(failures))
     raise ValueError("; ".join(failures))
 
 
@@ -689,6 +1137,10 @@ def provider_probe(_: str = Depends(_require_auth)) -> Dict[str, Any]:
             "enabled": PLAN_B_ENABLED,
             "reference_model": PLAN_B_REFERENCE_MODEL,
         },
+        "facebody": {
+            "configured": bool(ALIYUN_FACEBODY_ACCESS_KEY_ID and ALIYUN_FACEBODY_ACCESS_KEY_SECRET),
+            "endpoint": ALIYUN_FACEBODY_ENDPOINT,
+        },
         "robustness": {
             "generation_concurrency": GENERATION_CONCURRENCY,
             "generation_wait_timeout_seconds": GENERATION_WAIT_TIMEOUT_SECONDS,
@@ -701,15 +1153,37 @@ def provider_probe(_: str = Depends(_require_auth)) -> Dict[str, Any]:
     }
 
 
+@app.post("/api/face/attributes", response_model=FaceAttributesResponse)
+def recognize_face_attributes(
+    payload: FaceAttributesRequest,
+    _: str = Depends(_require_auth),
+) -> FaceAttributesResponse:
+    if not payload.image_data.startswith("data:image"):
+        raise HTTPException(status_code=400, detail="请上传有效的照片数据")
+
+    try:
+        normalized = _recognize_face_attributes(payload.image_data, payload.max_face_number)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    return FaceAttributesResponse(**normalized)
+
+
 @app.get("/api/admin/history", response_model=HistoryListResponse)
 def admin_history(request: Request, _: str = Depends(_require_auth)) -> HistoryListResponse:
     records = history_store.list()
     items = [
         HistoryItem(
             prediction_id=record.get("prediction_id", ""),
+            participant_class=record.get("participant_class", ""),
             participant_name=record.get("participant_name", ""),
             profession=record.get("profession", ""),
             generated_image_url=_build_public_image_url(request, record.get("filename", "")),
+            captured_image_url=(
+                _build_public_image_url(request, record.get("captured_filename", ""))
+                if record.get("captured_filename")
+                else None
+            ),
             image_provider=record.get("image_provider", "unknown"),
             created_at=record.get("created_at", ""),
         )
@@ -728,6 +1202,7 @@ def admin_delete_selected(payload: DeleteSelectedRequest, _: str = Depends(_requ
     deleted_records = history_store.delete_selected(prediction_ids)
     for record in deleted_records:
         _remove_generated_image(record.get("filename", ""))
+        _remove_generated_image(record.get("captured_filename", ""))
 
     return {"deleted": len(deleted_records)}
 
@@ -737,8 +1212,11 @@ def admin_clear_reset(_: str = Depends(_require_auth)) -> dict[str, int]:
     deleted_records = history_store.clear_all()
     for record in deleted_records:
         _remove_generated_image(record.get("filename", ""))
+        _remove_generated_image(record.get("captured_filename", ""))
 
-    allocator.reset(seed=None)
+    allocator_female.reset(seed=None)
+    allocator_male.reset(seed=None)
+    allocator_default.reset(seed=None)
     return {"deleted": len(deleted_records)}
 
 
@@ -748,7 +1226,12 @@ def predict_future_profession(
     request: Request,
     _: str = Depends(_require_auth),
 ) -> PredictResponse:
+    participant_class = payload.participant_class.strip()
     participant_name = payload.participant_name.strip()
+    if not participant_class:
+        raise HTTPException(status_code=400, detail="请输入班级")
+    if not CLASS_PATTERN.fullmatch(participant_class):
+        raise HTTPException(status_code=400, detail="班级必须是三位数字且中间为0，例如 408")
     if not participant_name:
         raise HTTPException(status_code=400, detail="请输入姓名")
     if not NAME_PATTERN.fullmatch(participant_name):
@@ -764,26 +1247,58 @@ def predict_future_profession(
 
     _acquire_generation_slot()
     try:
+        prediction_id = str(uuid.uuid4())
+        seed_value = str(uuid.uuid4().int % 1_000_000_000)
+        captured_filename = ""
+
+        confirmed_gender = (payload.confirmed_gender or "").strip().lower()
+        if confirmed_gender in {"female", "male"}:
+            detected_gender = confirmed_gender
+        else:
+            face_attributes = _recognize_face_attributes(payload.image_data, 1)
+            detected_gender = _detect_gender_from_face_attributes(face_attributes)
+
+        allocator = _get_allocator_for_gender(detected_gender)
         try:
             profession, profession_index, total = allocator.next_role(participant_name)
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
-        prediction_id = str(uuid.uuid4())
-        seed_value = str(uuid.uuid4().int % 1_000_000_000)
-        profession_label = PROFESSION_EN_LABELS.get(profession, f"{profession} (high-end future profession)")
+        profession_label = profession
+        profession_profile = get_profession_prompt_profile(profession_label)
+        profession_label_en = profession_profile["en"]
+        _log_face_attributes(
+            prediction_id=prediction_id,
+            participant_name=participant_name,
+            gender=detected_gender,
+        )
+
+        gender_token = ""
+        if detected_gender == "female":
+            gender_token = "1girl, female, young woman, "
+        elif detected_gender == "male":
+            gender_token = "1boy, male, young man, "
+
+        scene_prompt = profession_profile["scene"]
+        shot_template = profession_profile["shot"]
+
         image_prompt = (
-            "masterpiece, photorealistic portrait, future career professional, "
-            f"{profession_label}, around 20 years old young adult, "
+            f"masterpiece, photorealistic portrait, future career professional, {gender_token}"
+            f"{profession_label_en} ({profession_label}), around 20 years old young adult, "
+            f"{scene_prompt}, {shot_template}, show clear profession-specific tools, signage, and workplace context, "
             "keep the same person identity from reference photo, "
             "preserve original nationality and ethnicity cues, "
             "do not alter race, skin tone family, facial structure, eye shape, or hair texture, "
+            "front-facing portrait, full face visible, both eyes clearly visible, clear eyebrows, clear nose and lips, "
+            "no face occlusion, no transparent veil over face, no face reflection, no face overlay, no double exposure, "
+            "no distorted facial anatomy, no extra eyes, no extra mouth, no motion blur on face, "
             "warm friendly smile, refined attractive appearance, clean natural skin, "
             "professional formal outfit, soft cinematic lighting, high detail, 85mm lens, "
-            "clean background, uplifting and school-ceremony friendly"
+            "visually rich immersive background, avoid plain or empty background, uplifting and school-ceremony friendly"
         )
         filename = f"{prediction_id}.jpg"
         output_path = GENERATED_DIR / filename
+        captured_filename = _save_captured_image(payload.image_data, prediction_id)
 
         try:
             image_provider = _generate_future_image_plan_b(
@@ -792,18 +1307,22 @@ def predict_future_profession(
                 seed=seed_value,
                 output_path=output_path,
                 reference_image_data=payload.image_data,
+                gender=detected_gender,
             )
         except (httpx.HTTPError, OSError, ValueError) as error:
             allocator.rollback_role(profession)
+            _remove_generated_image(captured_filename)
             raise HTTPException(status_code=502, detail=f"第三方生图服务暂不可用：{error}") from error
 
         generated_image_url = _build_public_image_url(request, filename)
         history_store.add(
             {
                 "prediction_id": prediction_id,
+                "participant_class": participant_class,
                 "participant_name": participant_name,
                 "profession": profession,
                 "filename": filename,
+                "captured_filename": captured_filename,
                 "image_provider": image_provider,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -811,6 +1330,7 @@ def predict_future_profession(
 
         return PredictResponse(
             prediction_id=prediction_id,
+            participant_class=participant_class,
             participant_name=participant_name,
             profession=profession,
             profession_index=profession_index,
@@ -818,6 +1338,7 @@ def predict_future_profession(
             status_text="正在预测未来职业...",
             image_prompt=image_prompt,
             generated_image_url=generated_image_url,
+            captured_image_url=_build_public_image_url(request, captured_filename),
             image_provider=image_provider,
         )
     finally:
@@ -826,5 +1347,7 @@ def predict_future_profession(
 
 @app.post("/api/admin/reset")
 def reset_assignments(payload: ResetRequest, _: str = Depends(_require_auth)) -> dict[str, str]:
-    allocator.reset(payload.seed)
+    allocator_female.reset(payload.seed)
+    allocator_male.reset(payload.seed)
+    allocator_default.reset(payload.seed)
     return {"message": "职业池已重置"}

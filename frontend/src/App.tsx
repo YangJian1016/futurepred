@@ -4,6 +4,7 @@ import './App.css'
 
 type PredictResponse = {
   prediction_id: string
+  participant_class: string
   participant_name: string
   profession: string
   profession_index: number
@@ -11,6 +12,7 @@ type PredictResponse = {
   status_text: string
   image_prompt: string
   generated_image_url: string
+  captured_image_url?: string
   image_provider?: string
 }
 
@@ -22,6 +24,7 @@ type LoginResponse = {
 
 type ReviewItem = {
   predictionId: string
+  participantClass?: string
   name: string
   profession: string
   imageUrl: string
@@ -30,9 +33,11 @@ type ReviewItem = {
 
 type HistoryItemResponse = {
   prediction_id: string
+  participant_class: string
   participant_name: string
   profession: string
   generated_image_url: string
+  captured_image_url?: string
   image_provider: string
   created_at: string
 }
@@ -41,6 +46,20 @@ type HistoryListResponse = {
   items: HistoryItemResponse[]
   count: number
 }
+
+type FaceAttributesGender = {
+  label?: string
+}
+
+type FaceAttributesFace = {
+  gender?: FaceAttributesGender
+}
+
+type FaceAttributesResponse = {
+  faces?: FaceAttributesFace[]
+}
+
+type CameraFacing = 'user' | 'environment'
 
 const asString = (value: unknown) => (typeof value === 'string' ? value : '')
 
@@ -54,6 +73,7 @@ const normalizeReviewItem = (value: unknown): ReviewItem | null => {
   const name = asString(raw.name) || asString(raw.participant_name)
   const profession = asString(raw.profession)
   const imageUrl = asString(raw.imageUrl) || asString(raw.generated_image_url)
+  const participantClass = asString(raw.participantClass) || asString(raw.participant_class)
   const capturedImageUrl = asString(raw.capturedImageUrl) || asString(raw.captured_image_url)
 
   if (!predictionId || !name || !profession || !imageUrl) {
@@ -62,6 +82,7 @@ const normalizeReviewItem = (value: unknown): ReviewItem | null => {
 
   return {
     predictionId,
+    participantClass: participantClass || undefined,
     name,
     profession,
     imageUrl,
@@ -72,6 +93,7 @@ const normalizeReviewItem = (value: unknown): ReviewItem | null => {
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
 const REVIEW_STORAGE_KEY = 'futurepred-review-wall'
 const AUTH_STORAGE_KEY = 'futurepred-access-token'
+const CLASS_PATTERN = /^[0-9]0[0-9]$/
 const NAME_PATTERN = /^[A-Za-z\u4e00-\u9fff]+(?: [A-Za-z\u4e00-\u9fff]+)*$/
 const WALL_TARGET_TOTAL = 28
 const FUTURE_YEARS = Array.from({ length: 15 }, (_, index) => 2026 + index)
@@ -87,12 +109,97 @@ const LOADING_STORY = [
   ...RETURN_YEARS.map((year) => `${year}年`),
   '艾小语已经带着你未来的照片回来了',
 ]
-const TUNNEL_TARGET_TOTAL_MS = 20_000
-const TUNNEL_REVEAL_DELAY_MS = 650
+const TUNNEL_TARGET_TOTAL_MS = 14_000
+const TUNNEL_REVEAL_DELAY_MS = 420
 const TUNNEL_STEP_MS = Math.max(
   320,
   Math.round((TUNNEL_TARGET_TOTAL_MS - TUNNEL_REVEAL_DELAY_MS) / Math.max(1, LOADING_STORY.length - 1)),
 )
+const MAIN_RECENT_LIMIT = 20
+const MAX_CAPTURE_BYTES = 7 * 1024 * 1024
+const CAPTURE_SIZE_STEPS = [720, 640, 560, 480, 400]
+const CAPTURE_QUALITY_STEPS = [0.9, 0.84, 0.78, 0.72, 0.66, 0.6]
+
+const loadStoredToken = () => {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+  return localStorage.getItem(AUTH_STORAGE_KEY) || ''
+}
+
+const loadStoredReviewList = (): ReviewItem[] => {
+  if (typeof window === 'undefined') {
+    return []
+  }
+
+  try {
+    const cache = localStorage.getItem(REVIEW_STORAGE_KEY)
+    if (!cache) {
+      return []
+    }
+    const parsed = JSON.parse(cache) as unknown
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed
+      .map((item) => normalizeReviewItem(item))
+      .filter((item): item is ReviewItem => item !== null)
+  } catch {
+    return []
+  }
+}
+
+const getDataUrlBytes = (dataUrl: string) => {
+  const base64 = dataUrl.split(',', 2)[1] ?? ''
+  if (!base64) {
+    return 0
+  }
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return Math.floor((base64.length * 3) / 4) - padding
+}
+
+const captureCompressedPhoto = (video: HTMLVideoElement) => {
+  const sourceWidth = video.videoWidth || 720
+  const sourceHeight = video.videoHeight || 720
+  const sourceSize = Math.min(sourceWidth, sourceHeight)
+  const sourceX = Math.max(0, Math.floor((sourceWidth - sourceSize) / 2))
+  const sourceY = Math.max(0, Math.floor((sourceHeight - sourceSize) / 2))
+
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return null
+  }
+
+  let bestDataUrl = ''
+  let bestBytes = Number.MAX_SAFE_INTEGER
+
+  for (const size of CAPTURE_SIZE_STEPS) {
+    canvas.width = size
+    canvas.height = size
+    context.clearRect(0, 0, size, size)
+    context.drawImage(video, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size)
+
+    for (const quality of CAPTURE_QUALITY_STEPS) {
+      const dataUrl = canvas.toDataURL('image/jpeg', quality)
+      const bytes = getDataUrlBytes(dataUrl)
+      if (bytes < bestBytes) {
+        bestDataUrl = dataUrl
+        bestBytes = bytes
+      }
+      if (bytes <= MAX_CAPTURE_BYTES) {
+        return { dataUrl, bytes }
+      }
+    }
+  }
+
+  if (!bestDataUrl) {
+    return null
+  }
+
+  return { dataUrl: bestDataUrl, bytes: bestBytes }
+}
 
 const getCameraErrorMessage = (error: unknown) => {
   if (!(error instanceof DOMException)) {
@@ -126,6 +233,7 @@ function App() {
   const audioNodesRef = useRef<{ osc: OscillatorNode; gain: GainNode }[]>([])
   const audioLfoRef = useRef<number | null>(null)
   const [participantName, setParticipantName] = useState('')
+  const [participantClass, setParticipantClass] = useState('')
   const [capturedImage, setCapturedImage] = useState('')
   const [result, setResult] = useState<PredictResponse | null>(null)
   const [status, setStatus] = useState('点击“开启摄像头”开始')
@@ -135,18 +243,26 @@ function App() {
   const [pendingResult, setPendingResult] = useState<PredictResponse | null>(null)
   const [pendingReviewItem, setPendingReviewItem] = useState<ReviewItem | null>(null)
   const [reviewList, setReviewList] = useState<ReviewItem[]>([])
-  const [token, setToken] = useState('')
+  const [recentReviewList, setRecentReviewList] = useState<ReviewItem[]>([])
+  const [token, setToken] = useState(() => loadStoredToken())
   const [loginName, setLoginName] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false)
   const [loadingStoryIndex, setLoadingStoryIndex] = useState(0)
   const [isWarpSoundEnabled, setIsWarpSoundEnabled] = useState(true)
   const [adminNameFilter, setAdminNameFilter] = useState('')
   const [adminProfessionFilter, setAdminProfessionFilter] = useState('')
   const [isAdminWorking, setIsAdminWorking] = useState(false)
   const [selectedPredictionIds, setSelectedPredictionIds] = useState<string[]>([])
-  const [viewMode, setViewMode] = useState<'main' | 'admin'>('main')
+  const [viewMode, setViewMode] = useState<'main' | 'admin' | 'wall'>('main')
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false)
+  const [confirmGender, setConfirmGender] = useState<'female' | 'male' | ''>('')
+  const [isPreparingConfirm, setIsPreparingConfirm] = useState(false)
+  const [isStartingCamera, setIsStartingCamera] = useState(false)
+  const [mainWallPageSize, setMainWallPageSize] = useState(5)
+  const [mainWallPage, setMainWallPage] = useState(1)
   const [wallFocusMode, setWallFocusMode] = useState(false)
   const [wallAutoScroll, setWallAutoScroll] = useState(false)
   const [isExportingWall, setIsExportingWall] = useState(false)
@@ -155,9 +271,17 @@ function App() {
   const [slideshowMode, setSlideshowMode] = useState(false)
   const [slideshowIndex, setSlideshowIndex] = useState(0)
   const [slideshowMusicOn, setSlideshowMusicOn] = useState(true)
+  const [cameraFacing, setCameraFacing] = useState<CameraFacing>('user')
+  const [availableCameraCount, setAvailableCameraCount] = useState(0)
 
+  const trimmedParticipantClass = participantClass.trim()
+  const isClassValid = CLASS_PATTERN.test(trimmedParticipantClass)
   const trimmedParticipantName = participantName.trim()
   const isNameValid = NAME_PATTERN.test(trimmedParticipantName)
+  const mainWallTotalPages = Math.max(1, Math.ceil(recentReviewList.length / mainWallPageSize))
+  const mainWallStart = (mainWallPage - 1) * mainWallPageSize
+  const mainWallItems = recentReviewList.slice(mainWallStart, mainWallStart + mainWallPageSize)
+  const canSubmitConfirmed = !!confirmGender && !!trimmedParticipantClass && isClassValid && !!trimmedParticipantName && isNameValid
   const normalizedNameFilter = adminNameFilter.trim().toLowerCase()
   const normalizedProfessionFilter = adminProfessionFilter.trim().toLowerCase()
   const adminFilteredList = reviewList.filter((item) => {
@@ -175,7 +299,15 @@ function App() {
 
   useEffect(() => {
     const applyHashView = () => {
-      setViewMode(window.location.hash === '#/admin' ? 'admin' : 'main')
+      if (window.location.hash === '#/admin') {
+        setViewMode('admin')
+        return
+      }
+      if (window.location.hash === '#/wall') {
+        setViewMode('wall')
+        return
+      }
+      setViewMode('main')
     }
 
     applyHashView()
@@ -184,29 +316,32 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const savedToken = localStorage.getItem(AUTH_STORAGE_KEY) || ''
-    setToken(savedToken)
-
-    try {
-      const cache = localStorage.getItem(REVIEW_STORAGE_KEY)
-      if (!cache) {
-        return
-      }
-      const parsed = JSON.parse(cache) as unknown
-      if (Array.isArray(parsed)) {
-        const normalized = parsed
-          .map((item) => normalizeReviewItem(item))
-          .filter((item): item is ReviewItem => item !== null)
-        setReviewList(normalized)
-      }
-    } catch {
-      setReviewList([])
+    if (mainWallPage > mainWallTotalPages) {
+      setMainWallPage(mainWallTotalPages)
     }
-  }, [])
+  }, [mainWallPage, mainWallTotalPages])
 
   useEffect(() => {
-    localStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(reviewList))
-  }, [reviewList])
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      return
+    }
+
+    const refreshAvailableCameraCount = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        setAvailableCameraCount(devices.filter((device) => device.kind === 'videoinput').length)
+      } catch {
+        setAvailableCameraCount(0)
+      }
+    }
+
+    void refreshAvailableCameraCount()
+    navigator.mediaDevices.addEventListener?.('devicechange', refreshAvailableCameraCount)
+
+    return () => {
+      navigator.mediaDevices.removeEventListener?.('devicechange', refreshAvailableCameraCount)
+    }
+  }, [])
 
   useEffect(() => {
     if (token) {
@@ -231,9 +366,11 @@ function App() {
 
     const mapped = data.items.map((item) => ({
       predictionId: item.prediction_id,
+      participantClass: item.participant_class,
       name: item.participant_name,
       profession: item.profession,
       imageUrl: item.generated_image_url,
+      capturedImageUrl: item.captured_image_url,
     }))
     setReviewList(mapped)
     setSelectedPredictionIds([])
@@ -241,13 +378,44 @@ function App() {
 
   useEffect(() => {
     if (!token) {
+      setReviewList([])
+      setIsHistoryLoading(false)
       return
     }
 
+    if (viewMode === 'main') {
+      setIsHistoryLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setIsHistoryLoading(true)
+
+    const cachedReviewList = loadStoredReviewList()
+    if (cachedReviewList.length > 0) {
+      setReviewList(cachedReviewList)
+    }
+
     loadHistory(token).catch((historyError) => {
+      if (cancelled) {
+        return
+      }
       setError(historyError instanceof Error ? historyError.message : '历史记录加载失败')
+    }).finally(() => {
+      if (cancelled) {
+        return
+      }
+      setIsHistoryLoading(false)
     })
-  }, [token])
+
+    return () => {
+      cancelled = true
+    }
+  }, [token, viewMode])
+
+  useEffect(() => {
+    localStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(reviewList))
+  }, [reviewList])
 
   useEffect(() => {
     if (reviewList.length >= WALL_TARGET_TOTAL) {
@@ -510,18 +678,55 @@ function App() {
     return () => window.clearInterval(timer)
   }, [isPredicting])
 
-  const startCamera = async () => {
+  const startCamera = async (requestedFacing: CameraFacing = cameraFacing, forceRestart = false) => {
+    if (isStartingCamera) {
+      return
+    }
     setError('')
+    setIsStartingCamera(true)
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         setError('当前浏览器不支持摄像头调用，请改用 Chrome。')
         return
       }
 
+      const currentStream = streamRef.current
+      const activeTracks = currentStream?.getVideoTracks().filter((track) => track.readyState === 'live') ?? []
+      if (!forceRestart && currentStream && activeTracks.length > 0) {
+        setCapturedImage('')
+        setResult(null)
+        if (videoRef.current && videoRef.current.srcObject !== currentStream) {
+          videoRef.current.srcObject = currentStream
+        }
+
+        if (videoRef.current) {
+          try {
+            await videoRef.current.play()
+          } catch {
+            currentStream.getTracks().forEach((track) => track.stop())
+            streamRef.current = null
+            videoRef.current.srcObject = null
+          }
+        }
+
+        if (streamRef.current) {
+          setIsCameraOn(true)
+          setStatus(`镜头已就绪（${requestedFacing === 'user' ? '前置' : '后置'}），请直接拍照`)
+          return
+        }
+      }
+
+      // Ensure old stream is released before re-opening camera, avoiding stale-track behavior.
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+      if (videoRef.current) {
+        videoRef.current.srcObject = null
+      }
+
       let stream: MediaStream
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 720 }, height: { ideal: 720 }, facingMode: 'user' },
+          video: { width: { ideal: 720 }, height: { ideal: 720 }, facingMode: requestedFacing },
           audio: false,
         })
       } catch {
@@ -531,6 +736,15 @@ function App() {
         })
       }
 
+      setCameraFacing(requestedFacing)
+      if (navigator.mediaDevices?.enumerateDevices) {
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices()
+          setAvailableCameraCount(devices.filter((device) => device.kind === 'videoinput').length)
+        } catch {
+          // Ignore device enumeration failures after successful camera startup.
+        }
+      }
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
@@ -538,10 +752,24 @@ function App() {
       setCapturedImage('')
       setResult(null)
       setIsCameraOn(true)
-      setStatus('请看向镜头，点击“拍照”')
+      setStatus(`请看向${requestedFacing === 'user' ? '前置' : '后置'}镜头，点击“拍照”`)
     } catch (cameraError) {
       setError(getCameraErrorMessage(cameraError))
+    } finally {
+      setIsStartingCamera(false)
     }
+  }
+
+  const toggleCameraFacing = async () => {
+    const nextFacing: CameraFacing = cameraFacing === 'user' ? 'environment' : 'user'
+    setCameraFacing(nextFacing)
+
+    if (!isCameraOn) {
+      setStatus(`已切换为${nextFacing === 'user' ? '前置' : '后置'}镜头，点击“启动时空镜头”即可使用`)
+      return
+    }
+
+    await startCamera(nextFacing, true)
   }
 
   const stopCamera = () => {
@@ -551,6 +779,7 @@ function App() {
       videoRef.current.srcObject = null
     }
     setIsCameraOn(false)
+    setIsStartingCamera(false)
     setStatus('摄像头已关闭')
   }
 
@@ -559,38 +788,59 @@ function App() {
       return
     }
 
-    const canvas = document.createElement('canvas')
-    canvas.width = 720
-    canvas.height = 720
-    const context = canvas.getContext('2d')
-    if (!context) {
+    const compressed = captureCompressedPhoto(videoRef.current)
+    if (!compressed) {
       setError('拍照失败，请重试。')
       return
     }
 
-    context.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
-    const imageData = canvas.toDataURL('image/jpeg', 0.92)
-    setCapturedImage(imageData)
+    setCapturedImage(compressed.dataUrl)
     setResult(null)
-    setStatus('照片已捕获，点击“预测未来职业”')
+    const sizeMb = (compressed.bytes / (1024 * 1024)).toFixed(2)
+    setStatus(`照片已捕获（约 ${sizeMb}MB），点击“预测未来职业”`)
   }
 
-  const predict = async () => {
-    if (!trimmedParticipantName) {
-      setError('请输入姓名。')
+  const requestGenderPreview = async () => {
+    const response = await fetch(`${API_BASE}/api/face/attributes`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ image_data: capturedImage, max_face_number: 1 }),
+    })
+
+    const data: FaceAttributesResponse | { detail?: string } = await response.json()
+    if (response.status === 401) {
+      setToken('')
+      throw new Error('登录已失效，请重新登录。')
+    }
+    if (!response.ok) {
+      throw new Error((data as { detail?: string }).detail ?? '性别识别失败，请重试。')
+    }
+
+    const okData = data as FaceAttributesResponse
+    const gender = asString(okData.faces?.[0]?.gender?.label).toLowerCase()
+    if (gender !== 'female' && gender !== 'male') {
+      throw new Error('未识别到有效性别，请调整姿态后重试。')
+    }
+    return gender as 'female' | 'male'
+  }
+
+  const predictWithConfirmedGender = async () => {
+    if (!confirmGender) {
+      return
+    }
+    if (!trimmedParticipantClass || !isClassValid) {
+      setError('班级必须是三位数字且中间为0，例如 408。')
+      return
+    }
+    if (!trimmedParticipantName || !isNameValid) {
+      setError('姓名仅支持中文、英文和空格。')
       return
     }
 
-    if (!isNameValid) {
-      setError('姓名仅支持中文、英文和空格，请勿输入特殊符号。')
-      return
-    }
-
-    if (!capturedImage) {
-      setError('请先拍照。')
-      return
-    }
-
+    setShowConfirmDialog(false)
     setError('')
     setIsPredicting(true)
     void startWarpSound()
@@ -607,7 +857,9 @@ function App() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
+          participant_class: trimmedParticipantClass,
           participant_name: trimmedParticipantName,
+          confirmed_gender: confirmGender,
           image_data: capturedImage,
         }),
       })
@@ -621,13 +873,13 @@ function App() {
         throw new Error(data.detail ?? '预测失败，请重试。')
       }
 
-      const displayName = trimmedParticipantName
       const reviewItem: ReviewItem = {
         predictionId: data.prediction_id,
-        name: displayName,
+        participantClass: data.participant_class || trimmedParticipantClass,
+        name: trimmedParticipantName,
         profession: data.profession,
         imageUrl: data.generated_image_url,
-        capturedImageUrl: capturedImage ?? undefined,
+        capturedImageUrl: data.captured_image_url || capturedImage || undefined,
       }
 
       setPendingResult(data)
@@ -645,6 +897,51 @@ function App() {
     }
   }
 
+  const predict = async () => {
+    if (!trimmedParticipantClass) {
+      setError('请输入班级。')
+      return
+    }
+
+    if (!isClassValid) {
+      setError('班级必须是三位数字且中间为0，例如 408。')
+      return
+    }
+
+    if (!trimmedParticipantName) {
+      setError('请输入姓名。')
+      return
+    }
+
+    if (!isNameValid) {
+      setError('姓名仅支持中文、英文和空格，请勿输入特殊符号。')
+      return
+    }
+
+    if (!capturedImage) {
+      setError('请先拍照。')
+      return
+    }
+
+    try {
+      setError('')
+      setIsPreparingConfirm(true)
+      setStatus('艾小语正在收集你的信息，请稍候...')
+      const gender = await requestGenderPreview()
+      setConfirmGender(gender)
+      setShowConfirmDialog(true)
+      setStatus('请确认班级、姓名和性别后继续。')
+    } catch (previewError) {
+      setError(
+        previewError instanceof Error ? previewError.message : '请求失败，请稍后再试。',
+      )
+      setShowConfirmDialog(false)
+      setStatus('识别失败，请重试。')
+    } finally {
+      setIsPreparingConfirm(false)
+    }
+  }
+
   useEffect(() => {
     if (!isPredicting || !pendingResult || !pendingReviewItem) {
       return
@@ -655,6 +952,10 @@ function App() {
 
     const revealTimer = window.setTimeout(() => {
       setResult(pendingResult)
+      setRecentReviewList((prev) => [
+        pendingReviewItem,
+        ...prev.filter((item) => item.predictionId !== pendingReviewItem.predictionId),
+      ].slice(0, MAIN_RECENT_LIMIT))
       setReviewList((prev) => [
         pendingReviewItem,
         ...prev.filter((item) => item.predictionId !== pendingReviewItem.predictionId),
@@ -662,7 +963,13 @@ function App() {
       setPendingResult(null)
       setPendingReviewItem(null)
       setIsPredicting(false)
-      setStatus('预测完成，艾小语已带回未来照片。')
+      // Clear previous snapshot so the next participant sees live camera immediately.
+      setCapturedImage('')
+      setParticipantClass('')
+      setParticipantName('')
+      setConfirmGender('')
+      setShowConfirmDialog(false)
+      setStatus('预测完成，艾小语已带回未来照片。请下一位同学直接拍照继续。')
       stopWarpSound()
     }, TUNNEL_REVEAL_DELAY_MS)
 
@@ -711,6 +1018,9 @@ function App() {
     stopWarpSound()
     setToken('')
     setResult(null)
+    setReviewList([])
+    setRecentReviewList([])
+    setParticipantClass('')
     setCapturedImage('')
     setIsCameraOn(false)
     setStatus('已退出登录')
@@ -768,6 +1078,7 @@ function App() {
 
       const deletedIds = new Set(selectedPredictionIds)
       setReviewList((prev) => prev.filter((item) => !deletedIds.has(item.predictionId)))
+      setRecentReviewList((prev) => prev.filter((item) => !deletedIds.has(item.predictionId)))
       setSelectedPredictionIds([])
       setStatus(`已删除 ${deletedIds.size} 张历史照片。`)
       if (result && deletedIds.has(result.prediction_id)) {
@@ -804,6 +1115,7 @@ function App() {
       }
 
       setReviewList([])
+      setRecentReviewList([])
       setSelectedPredictionIds([])
       setResult(null)
       setStatus('已清空历史照片并重置职业池。')
@@ -1079,6 +1391,7 @@ function App() {
         const rank = String(index + 1).padStart(2, '0')
         const safeName = sanitizeFileName(item.name)
         const safeProfession = sanitizeFileName(item.profession)
+        const classFolder = sanitizeFileName(item.participantClass || '未分班')
 
         try {
           const response = await fetch(src)
@@ -1089,13 +1402,13 @@ function App() {
           const blob = await response.blob()
           const extension = inferExtension(blob.type, src)
           const filename = `${rank}-${safeName}-${safeProfession}.${extension}`
-          zip.file(filename, blob)
+          zip.file(`${classFolder}/${filename}`, blob)
           exportedCount += 1
         } catch (imageError) {
           failedCount += 1
           zip.file(
-            `失败记录/${rank}-${safeName}.txt`,
-            `姓名: ${item.name}\n职业: ${item.profession}\n图片地址: ${src}\n错误: ${imageError instanceof Error ? imageError.message : '未知错误'}`,
+            `${classFolder}/失败记录/${rank}-${safeName}.txt`,
+            `班级: ${item.participantClass || '未分班'}\n姓名: ${item.name}\n职业: ${item.profession}\n图片地址: ${src}\n错误: ${imageError instanceof Error ? imageError.message : '未知错误'}`,
           )
         }
       }
@@ -1198,37 +1511,38 @@ function App() {
         const safeName = sanitizeFileName(item.name)
         const safeProfession = sanitizeFileName(item.profession)
         const baseName = `${rank}-${safeName}-${safeProfession}`
+        const classFolder = sanitizeFileName(item.participantClass || '未分班')
 
         let pairOk = true
 
         if (item.capturedImageUrl) {
           try {
-            await addImage('现在', item.capturedImageUrl, baseName)
+            await addImage('现在', item.capturedImageUrl, `${classFolder}/${baseName}`)
           } catch (error) {
             pairOk = false
             failedImageCount += 1
             zip.file(
-              `失败记录/${baseName}-现在.txt`,
-              `姓名: ${item.name}\n职业: ${item.profession}\n标签: 现在\n图片地址: ${item.capturedImageUrl}\n错误: ${error instanceof Error ? error.message : '未知错误'}`,
+              `${classFolder}/失败记录/${baseName}-现在.txt`,
+              `班级: ${item.participantClass || '未分班'}\n姓名: ${item.name}\n职业: ${item.profession}\n标签: 现在\n图片地址: ${item.capturedImageUrl}\n错误: ${error instanceof Error ? error.message : '未知错误'}`,
             )
           }
         } else {
           pairOk = false
           missingNowCount += 1
           zip.file(
-            `失败记录/${baseName}-现在缺失.txt`,
-            `姓名: ${item.name}\n职业: ${item.profession}\n说明: 当前记录没有“现在”照片（老数据通常只包含“未来”图）。`,
+            `${classFolder}/失败记录/${baseName}-现在缺失.txt`,
+            `班级: ${item.participantClass || '未分班'}\n姓名: ${item.name}\n职业: ${item.profession}\n说明: 当前记录没有“现在”照片（老数据通常只包含“未来”图）。`,
           )
         }
 
         try {
-          await addImage('未来', item.imageUrl, baseName)
+          await addImage('未来', item.imageUrl, `${classFolder}/${baseName}`)
         } catch (error) {
           pairOk = false
           failedImageCount += 1
           zip.file(
-            `失败记录/${baseName}-未来.txt`,
-            `姓名: ${item.name}\n职业: ${item.profession}\n标签: 未来\n图片地址: ${item.imageUrl}\n错误: ${error instanceof Error ? error.message : '未知错误'}`,
+            `${classFolder}/失败记录/${baseName}-未来.txt`,
+            `班级: ${item.participantClass || '未分班'}\n姓名: ${item.name}\n职业: ${item.profession}\n标签: 未来\n图片地址: ${item.imageUrl}\n错误: ${error instanceof Error ? error.message : '未知错误'}`,
           )
         }
 
@@ -1268,6 +1582,9 @@ function App() {
   const openAdminPage = () => {
     window.location.hash = '#/admin'
   }
+  const openWallPage = () => {
+    window.location.hash = '#/wall'
+  }
   const openMainPage = () => {
     window.location.hash = '#/'
   }
@@ -1297,6 +1614,18 @@ function App() {
           </button>
           {loginError && <p className="error">{loginError}</p>}
         </section>
+        <footer className="app-footer">
+          <div className="beian-info">
+            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">
+              浙ICP备2026022828号
+            </a>
+            <span className="separator"> | </span>
+            <a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=33011002019348" target="_blank" rel="noopener noreferrer">
+              <img className="beian-police-icon" src="/beian-police-badge.png" alt="" aria-hidden="true" />
+              浙公网安备33011002019348号
+            </a>
+          </div>
+        </footer>
       </main>
     )
   }
@@ -1305,7 +1634,10 @@ function App() {
     <main className="container">
       <button className="logout-corner" onClick={logout}>退出登录</button>
       <button className="admin-nav-corner" onClick={viewMode === 'admin' ? openMainPage : openAdminPage}>
-        {viewMode === 'admin' ? '返回活动页面' : '管理员页面'}
+        {viewMode === 'admin' ? '返回采集页面' : '管理员页面'}
+      </button>
+      <button className="wall-nav-corner" onClick={viewMode === 'wall' ? openMainPage : openWallPage}>
+        {viewMode === 'wall' ? '返回采集页面' : '职业墙页面'}
       </button>
 
       {viewMode === 'admin' ? (
@@ -1403,6 +1735,8 @@ function App() {
         </section>
       ) : (
         <>
+          {viewMode === 'main' && (
+          <>
           <header className="hero-header">
             <div className="hero-badge">杭州英特外国语学校（小学部）</div>
             <div className="drop-row" aria-hidden="true">
@@ -1411,7 +1745,7 @@ function App() {
               <span>💧</span>
             </div>
             <h1>艾小语时空隧道 · 未来职业预测</h1>
-            <p>🎉 十岁礼特别环节：杭州英特外国语学校（小学部）的小雨滴们勇敢出发，一起预测闪闪发光的未来职业</p>
+            <p>🎉 十岁礼特别环节：杭州英特外国语学校（小学部）的同学们勇敢出发，一起预测闪闪发光的未来职业</p>
           </header>
 
           <section className="workspace-panel">
@@ -1422,9 +1756,31 @@ function App() {
                 ) : (
                   <video ref={videoRef} autoPlay playsInline muted className="preview" />
                 )}
+                {availableCameraCount > 1 && (
+                  <button
+                    type="button"
+                    className="camera-switch-button"
+                    onClick={() => void toggleCameraFacing()}
+                    disabled={isStartingCamera || isPredicting}
+                    aria-label={cameraFacing === 'user' ? '切换到后置镜头' : '切换到前置镜头'}
+                    title={cameraFacing === 'user' ? '切换后置镜头' : '切换前置镜头'}
+                  >
+                    ↺
+                  </button>
+                )}
               </div>
 
               <div className="controls">
+                <input
+                  type="text"
+                  placeholder="请输入班级（如 408）"
+                  value={participantClass}
+                  onChange={(event) => setParticipantClass(event.target.value)}
+                  maxLength={3}
+                />
+                {!!trimmedParticipantClass && !isClassValid && (
+                  <p className="error">班级必须是三位数字且中间为0，例如 408。</p>
+                )}
                 <input
                   type="text"
                   placeholder="请输入姓名（必填）"
@@ -1436,14 +1792,16 @@ function App() {
                   <p className="error">姓名仅支持中文、英文和空格。</p>
                 )}
                 <div className="button-row">
-                  <button onClick={startCamera}>启动时空镜头</button>
-                  <button onClick={stopCamera} disabled={!isCameraOn}>
+                  <button onClick={() => void startCamera()} disabled={isStartingCamera || isPredicting}>
+                    {isStartingCamera ? '镜头启动中...' : '启动时空镜头'}
+                  </button>
+                  <button onClick={stopCamera} disabled={!isCameraOn || isStartingCamera}>
                     关闭时空镜头
                   </button>
-                  <button onClick={takePhoto} disabled={!isCameraOn}>
+                  <button onClick={takePhoto} disabled={!isCameraOn || isStartingCamera}>
                     定格当前时空
                   </button>
-                  <button onClick={predict} disabled={isPredicting || !capturedImage || !trimmedParticipantName || !isNameValid}>
+                  <button onClick={predict} disabled={isPredicting || isPreparingConfirm || !capturedImage || !trimmedParticipantName || !trimmedParticipantClass || !isNameValid || !isClassValid}>
                     {isPredicting ? '时空穿梭中...' : '开启时空预测'}
                   </button>
                 </div>
@@ -1502,6 +1860,56 @@ function App() {
             </section>
           </section>
 
+          <section className="review-panel">
+            <div className="review-header">
+              <h2>最近采集记录</h2>
+              <span>本次 {recentReviewList.length} 位</span>
+            </div>
+            <div className="wall-tools">
+              <label>
+                每页
+                <select value={mainWallPageSize} onChange={(event) => { setMainWallPageSize(Number(event.target.value)); setMainWallPage(1) }}>
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                </select>
+                条
+              </label>
+              <button type="button" onClick={() => setMainWallPage((prev) => Math.max(1, prev - 1))} disabled={mainWallPage <= 1}>上一页</button>
+              <span>第 {mainWallPage} / {mainWallTotalPages} 页</span>
+              <button type="button" onClick={() => setMainWallPage((prev) => Math.min(mainWallTotalPages, prev + 1))} disabled={mainWallPage >= mainWallTotalPages}>下一页</button>
+            </div>
+            {mainWallItems.length === 0 ? (
+              <p className="review-empty">当前页面只显示本次新采集的照片，历史记录请前往职业墙查看。</p>
+            ) : (
+              <div className="review-grid">
+                {mainWallItems.map((item) => (
+                  <article key={item.predictionId} className="review-card">
+                    {item.capturedImageUrl ? (
+                      <div className="review-dual-images">
+                        <div className="review-img-wrap">
+                          <img src={item.capturedImageUrl} alt={`${item.name} 现在`} className="review-image" />
+                          <span className="review-img-label">现在</span>
+                        </div>
+                        <div className="review-img-wrap">
+                          <img src={item.imageUrl} alt={`${item.name} 未来`} className="review-image" />
+                          <span className="review-img-label">未来</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <img src={item.imageUrl} alt={item.name} className="review-image" />
+                    )}
+                    <p className="review-name">{item.participantClass ? `${item.participantClass} · ` : ''}{item.name}</p>
+                    <p className="review-profession">{item.profession}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+          </>
+          )}
+
+          {viewMode === 'wall' && (
           <section className={wallFocusMode ? 'review-panel review-panel-fullscreen' : 'review-panel'}>
             {slideshowMode && reviewList.length > 0 && (() => {
               const item = reviewList[slideshowIndex % reviewList.length]
@@ -1588,7 +1996,7 @@ function App() {
               <h2>未来职业回顾墙</h2>
               <span>已采集 {reviewList.length} 位</span>
             </div>
-            <p className="review-subtitle">杭州英特外国语学校（小学部） · 小雨滴十岁礼纪念墙</p>
+            <p className="review-subtitle">杭州英特外国语学校（小学部） · 同学们十岁礼纪念墙</p>
             <div className="wall-tools">
               <button type="button" onClick={() => setWallFocusMode((prev) => !prev)}>
                 {wallFocusMode ? '退出大屏展示' : '最大化职业墙'}
@@ -1619,7 +2027,9 @@ function App() {
               )}
             </div>
 
-            {reviewList.length === 0 ? (
+            {isHistoryLoading && reviewList.length === 0 ? (
+              <p className="review-empty">正在加载职业墙内容...</p>
+            ) : reviewList.length === 0 ? (
               <p className="review-empty">完成预测后，照片会展示在这里，方便全年级一起回顾。</p>
             ) : (
               <div
@@ -1642,15 +2052,74 @@ function App() {
                     ) : (
                       <img src={item.imageUrl} alt={item.name} className="review-image" />
                     )}
-                    <p className="review-name">{item.name}</p>
+                    <p className="review-name">{item.participantClass ? `${item.participantClass} · ` : ''}{item.name}</p>
                     <p className="review-profession">{item.profession}</p>
                   </article>
                 ))}
               </div>
             )}
           </section>
+          )}
+
+          {showConfirmDialog && (
+            <div className="confirm-overlay">
+              <div className="confirm-modal">
+                <h3>请确认采集信息</h3>
+                {capturedImage && <img src={capturedImage} alt="采集头像缩略图" className="confirm-avatar" />}
+                <div className="confirm-form">
+                  <input
+                    type="text"
+                    className="confirm-input"
+                    placeholder="班级（如 408）"
+                    value={participantClass}
+                    onChange={(event) => setParticipantClass(event.target.value)}
+                    maxLength={3}
+                  />
+                  {!!trimmedParticipantClass && !isClassValid && (
+                    <p className="error">班级必须是三位数字且中间为0，例如 408。</p>
+                  )}
+                  <input
+                    type="text"
+                    className="confirm-input"
+                    placeholder="姓名"
+                    value={participantName}
+                    onChange={(event) => setParticipantName(event.target.value)}
+                    maxLength={50}
+                  />
+                  {!!trimmedParticipantName && !isNameValid && (
+                    <p className="error">姓名仅支持中文、英文和空格。</p>
+                  )}
+                  <select
+                    id="confirm-gender"
+                    className="confirm-select"
+                    value={confirmGender}
+                    onChange={(event) => setConfirmGender((event.target.value as 'female' | 'male' | ''))}
+                  >
+                    <option value="female">女</option>
+                    <option value="male">男</option>
+                  </select>
+                </div>
+                <div className="button-row confirm-actions">
+                  <button type="button" onClick={() => setShowConfirmDialog(false)} disabled={isPredicting}>返回修改</button>
+                  <button type="button" onClick={() => void predictWithConfirmedGender()} disabled={isPredicting || !canSubmitConfirmed}>确认并预测</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
+      <footer className="app-footer">
+        <div className="beian-info">
+          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">
+            浙ICP备2026022828号
+          </a>
+          <span className="separator"> | </span>
+          <a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=33011002019348" target="_blank" rel="noopener noreferrer">
+            <img className="beian-police-icon" src="/beian-police-badge.png" alt="" aria-hidden="true" />
+            浙公网安备33011002019348号
+          </a>
+        </div>
+      </footer>
     </main>
   )
 }
