@@ -118,8 +118,22 @@ ALIYUN_FACEBODY_ACCESS_KEY_SECRET = (
 )
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
-AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "ChangeMe123!")
-JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
+JWT_SECRET = os.getenv("JWT_SECRET", "")
+
+_INSECURE_DEFAULTS = {"changeme123!", "change-this-in-production", ""}
+
+if AUTH_ENABLED:
+    if AUTH_PASSWORD.lower() in _INSECURE_DEFAULTS:
+        raise RuntimeError(
+            "安全错误：AUTH_ENABLED=true 时必须在 .env 中设置强密码 AUTH_PASSWORD，"
+            "当前值为空或使用了已知的不安全默认值。"
+        )
+    if JWT_SECRET.lower() in _INSECURE_DEFAULTS:
+        raise RuntimeError(
+            "安全错误：AUTH_ENABLED=true 时必须在 .env 中设置随机长字符串 JWT_SECRET，"
+            "当前值为空或使用了已知的不安全默认值。"
+        )
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
 NAME_PATTERN = re.compile(r"^[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\-\.'·\s]{0,49}$")
