@@ -1,0 +1,16 @@
+[Unit]
+Description=FuturePred FastAPI Backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/futurepred/backend
+EnvironmentFile=/opt/futurepred/backend/.env
+ExecStart=/opt/futurepred/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --app-dir /opt/futurepred/backend
+Restart=always
+RestartSec=3
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
