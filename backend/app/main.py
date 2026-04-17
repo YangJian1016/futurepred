@@ -118,8 +118,36 @@ ALIYUN_FACEBODY_ACCESS_KEY_SECRET = (
 )
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
-AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "ChangeMe123!")
-JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
+JWT_SECRET = os.getenv("JWT_SECRET", "")
+
+_KNOWN_INSECURE_VALUES = {"changeme123!", "change-this-in-production"}
+
+if AUTH_ENABLED:
+    if not AUTH_PASSWORD:
+        raise RuntimeError(
+            "安全错误：AUTH_ENABLED=true 时必须在 .env 中设置 AUTH_PASSWORD，当前值为空。"
+        )
+    if AUTH_PASSWORD.lower() in _KNOWN_INSECURE_VALUES:
+        raise RuntimeError(
+            "安全错误：AUTH_PASSWORD 使用了已知的不安全默认值，请在 .env 中设置强密码。"
+        )
+    if len(AUTH_PASSWORD) < 8:
+        raise RuntimeError(
+            "安全错误：AUTH_PASSWORD 长度不足 8 位，请使用更强的密码。"
+        )
+    if not JWT_SECRET:
+        raise RuntimeError(
+            "安全错误：AUTH_ENABLED=true 时必须在 .env 中设置 JWT_SECRET，当前值为空。"
+        )
+    if JWT_SECRET.lower() in _KNOWN_INSECURE_VALUES:
+        raise RuntimeError(
+            "安全错误：JWT_SECRET 使用了已知的不安全默认值，请在 .env 中设置随机长字符串。"
+        )
+    if len(JWT_SECRET) < 32:
+        raise RuntimeError(
+            "安全错误：JWT_SECRET 长度不足 32 位，请使用至少 32 位的随机字符串。"
+        )
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
 NAME_PATTERN = re.compile(r"^[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\-\.'·\s]{0,49}$")
