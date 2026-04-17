@@ -17,6 +17,10 @@ backend/data/generated
 .env.*
 !**/.env.example
 
+# Build artifacts
+release/
+futurepred.tar.gz
+
 # OS
 .DS_Store
 Thumbs.db
